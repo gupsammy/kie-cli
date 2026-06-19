@@ -1,0 +1,426 @@
+{
+  "core": {
+    "report": "## KIE.AI Core API Contract\n\n### Overview\n\nKIE is an async AI generation marketplace. All generation tasks are async — POST to createTask returns a taskId only, result comes via callback or polling.\n\nTwo distinct base URLs exist:\n- Main API: https://api.kie.ai (market/jobs, common, credits)\n- File Upload API: https://kieai.redpandaai.co (file uploads only)\n\n### Auth\n\nEvery request requires `Authorization: Bearer <key>` and `Content-Type: application/json`. Env var is `KIE_API_KEY`.\n\n### Task Lifecycle\n\n```\nPOST /api/v1/jobs/createTask\n        |\n        v\n  { taskId: \"task_...\" }\n        |\n   (poll or callback)\n        |\n        v\nGET /api/v1/jobs/recordInfo?taskId=...\n        |\n  state: waiting -> queuing -> generating -> success | fail\n```\n\n### Result Payload Shape (recordInfo data object)\n\n- taskId: string\n- model: string (e.g. \"bytedance/seedance-2\")\n- state: enum [waiting, queuing, generating, success, fail]\n- param: string (JSON-stringified original request params)\n- resultJson: string (JSON-stringified) — present only on success\n  - For images/videos/media: `{\"resultUrls\": [\"https://...\"]}`\n  - For Seedance 2 with return_last_frame: `{\"resultUrls\": [], \"firstFrameUrl\": [], \"lastFrameUrl\": []}`\n  - For text models: `{\"resultObject\": {}}`\n- failCode: string (empty if success)\n- failMsg: string (empty if success)\n- costTime: int64 (ms)\n- completeTime: int64 (Unix ms timestamp)\n- createTime: int64 (Unix ms timestamp)\n- updateTime: int64 (Unix ms timestamp)\n- progress: integer 0-100 (only for sora2/sora2 pro models)\n- creditsConsumed: number\n\n### File Upload API\n\nThree methods, all at base https://kieai.redpandaai.co:\n\n1. URL upload (POST /api/file-url-upload): body `{fileUrl, uploadPath?, fileName?}` — remote URL fetched server-side, ≤100MB, 30s timeout\n2. Stream upload (POST /api/file-stream-upload): multipart/form-data with `file` binary field + `uploadPath?` + `fileName?` fields — best for large files\n3. Base64 upload (POST /api/file-base64-upload): body `{base64Data: \"data:image/png;base64,...\", uploadPath?, fileName?}` — recommended ≤10MB\n\nAll three return the same response shape:\n```json\n{\n  \"success\": true,\n  \"code\": 200,\n  \"msg\": \"File upload successful\",\n  \"data\": {\n    \"fileId\": \"file_abc123456\",\n    \"fileName\": \"my-image.jpg\",\n    \"originalName\": \"sample-image.jpg\",\n    \"fileSize\": 245760,\n    \"mimeType\": \"image/jpeg\",\n    \"uploadPath\": \"images\",\n    \"fileUrl\": \"https://kieai.redpandaai.co/files/images/my-image.jpg\",\n    \"downloadUrl\": \"https://kieai.redpandaai.co/download/file_abc123456\",\n    \"uploadTime\": \"2025-01-15T10:30:00Z\",\n    \"expiresAt\": \"2025-01-18T10:30:00Z\"\n  }\n}\n```\n\nUploaded files are deleted after 24 hours (the quickstart also mentions \"3 days\" in one section — the warning banner says 24 hours, the storage info section says 3 days; treat as 24 hours to be safe).\n\nUploaded asset URLs can be referenced in task inputs as `asset://{assetId}` (e.g. `asset://asset-20260404242101-76djj`).\n\n### Download / CDN Behavior\n\n- Generated media files (task results): stored for 14 days, then auto-deleted\n- Log records / metadata: stored 2 months\n- Download links from POST /api/v1/common/download-url: valid for only 20 minutes\n- The download-url endpoint accepts a kie.ai-generated URL and returns a temporary direct-download URL (same URL in practice, 20-min window)\n\n### Rate Limits\n\n- Up to 20 new generation requests per 10 seconds\n- Typically supports 100+ concurrent running tasks\n- Limits per account; exceeding returns HTTP 429\n\n### Error Codes (all returned in the code field of the response envelope)\n\n- 200: Success\n- 400: Bad Request — missing/invalid parameters\n- 401: Unauthorized — missing or invalid API key\n- 402: Insufficient Credits — account balance too low\n- 404: Not Found — resource or taskId does not exist\n- 405: Method Not Allowed (file upload API)\n- 408: Upstream timeout — no result after 10+ minutes\n- 422: Validation Error — request params failed validation; also returned as `{\"code\":422,\"msg\":\"recordInfo is null\",\"data\":null}` when taskId not found by recordInfo\n- 429: Rate Limited — too many requests\n- 433: Sub-key Usage Exceeds Limit\n- 455: Service Unavailable — system maintenance\n- 500: Server Error — unexpected error\n- 501: Generation Failed — task generation failed\n- 505: Feature Disabled — requested feature currently disabled\n\n### Live Credit Verification\n\nRan: `curl -s -H \"Authorization: Bearer $KIE_API_KEY\" https://api.kie.ai/api/v1/chat/credit`\nActual response received: `{\"code\":200,\"msg\":\"success\",\"data\":10051.0}`\nThe `data` field is a float representing the credit balance (not nested object).",
+    "base_url": "https://api.kie.ai",
+    "auth": "Header: Authorization: Bearer $KIE_API_KEY — all requests also need Content-Type: application/json. Env var: KIE_API_KEY. File upload API uses the same bearer token but hits https://kieai.redpandaai.co instead.",
+    "endpoints": [
+      {
+        "name": "Create Task (Market/Jobs)",
+        "method": "POST",
+        "path": "/api/v1/jobs/createTask",
+        "notes": "Universal task creation endpoint for all market models. NEVER call this — it starts a paid generation job. Request body: { model: string (required, e.g. 'bytedance/seedance-2'), callBackUrl: string (optional URI, recommended for production), input: object (model-specific params) }. Returns { code: 200, msg: 'success', data: { taskId: 'task_...' } }. HTTP 200 only means the task was queued, not completed.",
+        "request_sample": "{\"model\": \"bytedance/seedance-2\", \"callBackUrl\": \"https://your-domain.com/api/callback\", \"input\": {\"prompt\": \"A serene beach at sunset\", \"resolution\": \"720p\", \"aspect_ratio\": \"16:9\", \"duration\": 5, \"generate_audio\": false}}",
+        "response_sample": "{\"code\": 200, \"msg\": \"success\", \"data\": {\"taskId\": \"task_bytedance_1765186743319\"}}"
+      },
+      {
+        "name": "Query Task Status (Get Task Details)",
+        "method": "GET",
+        "path": "/api/v1/jobs/recordInfo",
+        "notes": "Poll task status by taskId. Query param: taskId (required, string). Returns full task record. state enum: waiting | queuing | generating | success | fail. resultJson is a JSON string — parse it to get resultUrls array. Only present when state=success. Use exponential backoff starting at 2-3s intervals; stop polling after 10-15 minutes. Returns 422 with msg='recordInfo is null' if taskId not found.",
+        "request_sample": "GET /api/v1/jobs/recordInfo?taskId=task_bytedance_1765186743319",
+        "response_sample": "{\"code\": 200, \"msg\": \"success\", \"data\": {\"taskId\": \"task_12345678\", \"model\": \"bytedance/seedance-2\", \"state\": \"success\", \"param\": \"{\\\"model\\\":\\\"bytedance/seedance-2\\\",...}\", \"resultJson\": \"{\\\"resultUrls\\\":[\\\"https://example.com/generated-content.mp4\\\"]}\", \"failCode\": \"\", \"failMsg\": \"\", \"costTime\": 15000, \"completeTime\": 1698765432000, \"createTime\": 1698765400000, \"updateTime\": 1698765432000, \"creditsConsumed\": 200}}"
+      },
+      {
+        "name": "Get Credit Balance",
+        "method": "GET",
+        "path": "/api/v1/chat/credit",
+        "notes": "Returns current account credit balance. No parameters required. LIVE VERIFIED — actual response shape confirmed: data is a plain float number, not an object. Example live response: {code:200, msg:'success', data:10051.0}",
+        "request_sample": "GET /api/v1/chat/credit",
+        "response_sample": "{\"code\": 200, \"msg\": \"success\", \"data\": 10051.0}"
+      },
+      {
+        "name": "Get Download URL",
+        "method": "POST",
+        "path": "/api/v1/common/download-url",
+        "notes": "Converts a kie.ai-generated file URL into a temporary direct-download link. Only works with kie.ai-generated URLs — external URLs return 422. Download links are valid for 20 minutes only. Request body: { url: string (required, kie.ai generated file URL) }. Returns the download URL as a string in data.",
+        "request_sample": "{\"url\": \"https://tempfile.1f6cxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxbd98\"}",
+        "response_sample": "{\"code\": 200, \"msg\": \"success\", \"data\": \"https://tempfile.1f6cxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxbd98\"}"
+      },
+      {
+        "name": "File Upload — URL Method",
+        "method": "POST",
+        "path": "/api/file-url-upload",
+        "notes": "BASE URL IS https://kieai.redpandaai.co (not api.kie.ai). Downloads a remote file and stores it. Content-Type: application/json. Max file size: ≤100MB recommended. 30-second download timeout. Uploaded files expire after 24 hours. Returned fileUrl can be used directly or referenced as asset://{assetId} in task inputs.",
+        "request_sample": "{\"fileUrl\": \"https://example.com/sample-image.jpg\", \"uploadPath\": \"images\", \"fileName\": \"my-image.jpg\"}",
+        "response_sample": "{\"success\": true, \"code\": 200, \"msg\": \"File upload successful\", \"data\": {\"fileId\": \"file_abc123456\", \"fileName\": \"my-image.jpg\", \"originalName\": \"sample-image.jpg\", \"fileSize\": 245760, \"mimeType\": \"image/jpeg\", \"uploadPath\": \"images\", \"fileUrl\": \"https://kieai.redpandaai.co/files/images/my-image.jpg\", \"downloadUrl\": \"https://kieai.redpandaai.co/download/file_abc123456\", \"uploadTime\": \"2025-01-15T10:30:00Z\", \"expiresAt\": \"2025-01-18T10:30:00Z\"}}"
+      },
+      {
+        "name": "File Upload — Stream Method",
+        "method": "POST",
+        "path": "/api/file-stream-upload",
+        "notes": "BASE URL IS https://kieai.redpandaai.co (not api.kie.ai). Multipart/form-data binary upload. Fields: file (binary, required), uploadPath (string, optional), fileName (string, optional). Best for large files. No explicit size limit documented beyond 'large files'. Uploaded files expire after 24 hours. fileName optional — if omitted a random name is generated; if same name provided as existing file, overwrites with caching delay.",
+        "request_sample": "multipart/form-data: file=@/path/to/file.jpg, uploadPath=images/user-uploads, fileName=custom-name.jpg",
+        "response_sample": "{\"success\": true, \"code\": 200, \"msg\": \"File upload successful\", \"data\": {\"fileId\": \"file_abc123456\", \"fileName\": \"custom-name.jpg\", \"fileUrl\": \"https://kieai.redpandaai.co/files/images/user-uploads/custom-name.jpg\", \"downloadUrl\": \"https://kieai.redpandaai.co/download/file_abc123456\", \"uploadTime\": \"2025-01-15T10:30:00Z\", \"expiresAt\": \"2025-01-18T10:30:00Z\"}}"
+      },
+      {
+        "name": "File Upload — Base64 Method",
+        "method": "POST",
+        "path": "/api/file-base64-upload",
+        "notes": "BASE URL IS https://kieai.redpandaai.co (not api.kie.ai). Content-Type: application/json. base64Data must include the data URI prefix (e.g. 'data:image/png;base64,...'). Recommended max size ≤10MB (data increases 33% due to base64 encoding). Uploaded files expire after 24 hours.",
+        "request_sample": "{\"base64Data\": \"data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA...\", \"uploadPath\": \"images\", \"fileName\": \"base64-image.png\"}",
+        "response_sample": "{\"success\": true, \"code\": 200, \"msg\": \"File upload successful\", \"data\": {\"fileId\": \"file_abc123456\", \"fileName\": \"base64-image.png\", \"fileUrl\": \"https://kieai.redpandaai.co/files/images/base64-image.png\", \"downloadUrl\": \"https://kieai.redpandaai.co/download/file_abc123456\", \"uploadTime\": \"2025-01-15T10:30:00Z\", \"expiresAt\": \"2025-01-18T10:30:00Z\"}}"
+      }
+    ],
+    "response_envelope": "Standard envelope for https://api.kie.ai endpoints: { code: integer, msg: string, data: object|number|string|null }\n\n- code 200 + msg 'success': request succeeded; data contains the payload\n- code non-200: error; msg contains error description; data may be null\n\nFor createTask: data = { taskId: string }\nFor recordInfo: data = full task record object (see task detail endpoint)\nFor credit: data = float (plain number, e.g. 10051.0) — VERIFIED LIVE\nFor download-url: data = string URL\n\nFile upload API (https://kieai.redpandaai.co) uses a slightly different envelope: { success: boolean, code: integer, msg: string, data: { fileId, fileName, originalName, fileSize, mimeType, uploadPath, fileUrl, downloadUrl, uploadTime, expiresAt } }\n\nKnown error codes:\n- 200: Success\n- 400: Bad Request — missing or invalid parameters (taskId required by recordInfo)\n- 401: Unauthorized — 'You do not have access permissions' — missing/invalid Authorization header\n- 402: Insufficient Credits — account balance exhausted, recharge required\n- 404: Not Found — resource or endpoint does not exist\n- 405: Method Not Allowed — wrong HTTP method (file upload API)\n- 408: Upstream Timeout — upstream returned no result after 10+ minutes\n- 422: Validation Error — params failed validation; also 'recordInfo is null' when taskId unknown; also for download-url when non-kie.ai URL provided\n- 429: Rate Limited — exceeded 20 requests/10s per account\n- 433: Sub-key Usage Exceeds Limit — sub-API-key quota exceeded\n- 455: Service Unavailable — system maintenance window\n- 500: Server Error — unexpected internal error; implement exponential backoff retry\n- 501: Generation Failed — task ran but content generation failed\n- 505: Feature Disabled — the requested model feature is currently disabled"
+  },
+  "seedance": {
+    "report": "# kie.ai Bytedance Seedance Video Models — CLI Spec Reference\n\nAll 8 models share a single API style and create-task path:\n\n- Base URL: https://api.kie.ai\n- Create path: POST /api/v1/jobs/createTask\n- Auth: Authorization: Bearer YOUR_API_KEY\n- Response shape: { code: int, msg: string, data: { taskId: string } }\n- Task status polling: GET /api/v1/jobs/getTaskDetail (see /market/common/get-task-detail)\n\n---\n\n## Model Taxonomy\n\n```\nSeedance 2 / 2-Fast       t2v + i2v (0-2 frames: first, last, or both) + multimodal ref\nSeedance 1.5 Pro          t2v + i2v (0-2 images via input_urls)\nV1 Pro / Pro Fast i2v     i2v only (single image_url, required)\nV1 Pro t2v                t2v only\nV1 Lite i2v               i2v only (image_url + optional end_image_url)\nV1 Lite t2v               t2v only\n```\n\n---\n\n## Key Schema Differences Across Model Families\n\n### Seedance 2 / 2-Fast\n- Image input: first_frame_url (string), last_frame_url (string), reference_image_urls (array, max 9), reference_video_urls (array, max 3), reference_audio_urls (array, max 3). These three modes (first frame, first+last frames, multimodal ref) are MUTUALLY EXCLUSIVE.\n- duration: integer 4–15 (not enum)\n- resolution: seedance-2 supports 480p/720p/1080p; seedance-2-fast supports 480p/720p only\n- aspect_ratio includes \"adaptive\" option (not present in other models)\n- generate_audio default is TRUE (costs more)\n- No seed param, no camera_fixed, no enable_safety_checker\n- Has: web_search (bool), nsfw_checker (bool), return_last_frame (bool, deprecated)\n- prompt: 3–20000 chars\n\n### Seedance 1.5 Pro\n- Image input: input_urls array (0-2 images, jpeg/png/webp, max 10MB each)\n- duration: string enum \"4\" | \"8\" | \"12\"\n- aspect_ratio: no \"adaptive\", no \"21:9\" in examples but schema has \"21:9\"\n- fixed_lens (bool, default false) instead of camera_fixed\n- generate_audio default is FALSE\n- No seed, no enable_safety_checker, no web_search\n- prompt + aspect_ratio + duration are REQUIRED inside input\n- prompt: 3–2500 chars (shorter limit than Seedance 2)\n\n### V1 Pro / V1 Pro Fast i2v, V1 Lite i2v\n- Image input: image_url (single string, required); v1-lite-i2v also has end_image_url (optional)\n- duration: string enum \"5\" | \"10\"\n- Has seed (number, -1 to 2147483647, default -1)\n- Has camera_fixed (bool)\n- Has enable_safety_checker (bool)\n- No generate_audio, no fixed_lens, no web_search\n- v1-pro-fast-i2v: resolution 720p/1080p only (no 480p)\n- v1-pro-i2v and v1-lite-i2v: 480p/720p/1080p\n- prompt: max 10000 chars\n\n### V1 Pro / V1 Lite t2v\n- No image input fields\n- Has aspect_ratio (v1-pro-t2v: 21:9/16:9/4:3/1:1/3:4/9:16; v1-lite-t2v: 16:9/4:3/1:1/3:4/9:16/9:21)\n- Has seed, camera_fixed, enable_safety_checker\n- duration: string enum \"5\" | \"10\"\n- resolution: 480p/720p/1080p\n\n---\n\n## Output Shape (all models identical)\n\nPOST response: { code: 200, msg: \"success\", data: { taskId: \"task_bytedance_...\" } }\n\nNo pricing/credits info was present in any of the fetched docs.",
+    "models": [
+      {
+        "model_id": "bytedance/seedance-2",
+        "display_name": "Bytedance Seedance 2.0",
+        "kind": "video",
+        "api_style": "market-jobs-api",
+        "create_path": "POST /api/v1/jobs/createTask",
+        "input_schema": "| Param | Type | Required | Default | Allowed Values / Notes |\n|---|---|---|---|---|\n| model | string | yes | bytedance/seedance-2 | bytedance/seedance-2 |\n| callBackUrl | string (uri) | no | — | Webhook URL for completion notification |\n| input.prompt | string | no (t2v) | — | 3–20000 chars; required for t2v, optional for i2v |\n| input.first_frame_url | string | no | — | URL or asset://{assetId}; MUTUALLY EXCLUSIVE with reference_image_urls |\n| input.last_frame_url | string | no | — | URL or asset://{assetId}; use with first_frame_url for first+last mode |\n| input.reference_image_urls | array[string] | no | — | Max 9 items; jpeg/png/webp/bmp/tiff/gif; 300–6000px; <30MB each; MUTUALLY EXCLUSIVE with first/last frame |\n| input.reference_video_urls | array[string] | no | — | Max 3 items; mp4/mov; 480p or 720p; 2–15s each; total ≤15s; <50MB each |\n| input.reference_audio_urls | array[string] | no | — | Max 3 items; wav/mp3; 2–15s each; total ≤15s; <15MB each |\n| input.generate_audio | boolean | no | true | true=generate audio (higher cost), false=no audio |\n| input.resolution | string | no | 720p | 480p, 720p, 1080p |\n| input.aspect_ratio | string | no | 16:9 | 1:1, 4:3, 3:4, 16:9, 9:16, 21:9, adaptive |\n| input.duration | integer | no | 5 | 4–15 (seconds, integer) |\n| input.web_search | boolean | no | — | Use online search |\n| input.nsfw_checker | boolean | no | false | false=disable content filtering |\n| input.return_last_frame | boolean | no | false | DEPRECATED; return last frame as image |",
+        "notes": "t2v + i2v (first frame, first+last frames, multimodal reference — three mutually exclusive modes). Seedance 2 flagship. Supports 1080p. generate_audio defaults to true (increases cost). duration is an integer 4-15, not an enum. aspect_ratio includes 'adaptive' option. No seed or camera_fixed params.",
+        "pricing": ""
+      },
+      {
+        "model_id": "bytedance/seedance-2-fast",
+        "display_name": "Bytedance Seedance 2.0 Fast",
+        "kind": "video",
+        "api_style": "market-jobs-api",
+        "create_path": "POST /api/v1/jobs/createTask",
+        "input_schema": "| Param | Type | Required | Default | Allowed Values / Notes |\n|---|---|---|---|---|\n| model | string | yes | bytedance/seedance-2-fast | bytedance/seedance-2-fast |\n| callBackUrl | string (uri) | no | — | Webhook URL for completion notification |\n| input.prompt | string | no | — | 3–20000 chars |\n| input.first_frame_url | string | no | — | URL or asset://{assetId} |\n| input.last_frame_url | string | no | — | URL or asset://{assetId} |\n| input.reference_image_urls | array[string] | no | — | Max 9 items; jpeg/png/webp/bmp/tiff/gif; 300–6000px; <30MB each |\n| input.reference_video_urls | array[string] | no | — | Max 3 items; mp4/mov; 480p or 720p; 2–15s each; total ≤15s; <50MB each |\n| input.reference_audio_urls | array[string] | no | — | Max 3 items; wav/mp3; 2–15s each; total ≤15s; <15MB each |\n| input.generate_audio | boolean | no | true | true=with audio, false=without audio |\n| input.resolution | string | no | 720p | 480p, 720p (no 1080p for fast variant) |\n| input.aspect_ratio | string | no | 16:9 | 1:1, 4:3, 3:4, 16:9, 9:16, 21:9, adaptive |\n| input.duration | integer | no | 5 | 4–15 (seconds, integer) |\n| input.web_search | boolean | no | — | Use online search |\n| input.nsfw_checker | boolean | no | false | false=disable content filtering |\n| input.return_last_frame | boolean | no | false | DEPRECATED |",
+        "notes": "t2v + i2v identical to seedance-2 but max resolution is 720p (no 1080p). Faster generation speed tradeoff. Same three mutually exclusive i2v modes apply. generate_audio defaults to true.",
+        "pricing": ""
+      },
+      {
+        "model_id": "bytedance/seedance-1.5-pro",
+        "display_name": "Bytedance Seedance 1.5 Pro",
+        "kind": "video",
+        "api_style": "market-jobs-api",
+        "create_path": "POST /api/v1/jobs/createTask",
+        "input_schema": "| Param | Type | Required | Default | Allowed Values / Notes |\n|---|---|---|---|---|\n| model | string | yes | bytedance/seedance-1.5-pro | bytedance/seedance-1.5-pro |\n| callBackUrl | string (uri) | no | — | Webhook URL |\n| input.prompt | string | yes | — | 3–2500 chars |\n| input.input_urls | array[string] | no | — | 0–2 image URLs; jpeg/png/webp; max 10MB each; omit for t2v |\n| input.aspect_ratio | string | yes | 1:1 | 1:1, 4:3, 3:4, 16:9, 9:16, 21:9 |\n| input.resolution | string | no | 720p | 480p, 720p, 1080p |\n| input.duration | string | yes | — | \"4\", \"8\", \"12\" (string enum, seconds) |\n| input.fixed_lens | boolean | no | false | true=lock camera for static shot, false=dynamic camera |\n| input.generate_audio | boolean | no | false | true=audio (higher cost), false=no audio |\n| input.nsfw_checker | boolean | no | false | false=disable content filtering |",
+        "notes": "t2v + i2v via input_urls array (0–2 images). prompt, aspect_ratio, and duration are all required. Uses fixed_lens (not camera_fixed). generate_audio defaults to false. duration is a string enum '4'/'8'/'12' — longer options than V1 series. No seed param. prompt max 2500 chars (shorter than Seedance 2).",
+        "pricing": ""
+      },
+      {
+        "model_id": "bytedance/v1-pro-fast-image-to-video",
+        "display_name": "Bytedance V1 Pro Fast Image to Video",
+        "kind": "video",
+        "api_style": "market-jobs-api",
+        "create_path": "POST /api/v1/jobs/createTask",
+        "input_schema": "| Param | Type | Required | Default | Allowed Values / Notes |\n|---|---|---|---|---|\n| model | string | yes | bytedance/v1-pro-fast-image-to-video | bytedance/v1-pro-fast-image-to-video |\n| callBackUrl | string (uri) | no | — | Webhook URL |\n| input.prompt | string | yes | — | max 10000 chars |\n| input.image_url | string | yes | — | jpeg/png/webp; max 10MB |\n| input.resolution | string | no | 720p | 720p, 1080p (no 480p for this fast variant) |\n| input.duration | string | no | \"5\" | \"5\", \"10\" (string enum, seconds) |\n| input.nsfw_checker | boolean | no | false | false=disable content filtering |",
+        "notes": "i2v only. Fast variant of v1-pro-i2v. No seed, no camera_fixed, no enable_safety_checker params (stripped down). Resolution options are 720p/1080p only — no 480p despite being the 'fast' variant. Both prompt and image_url are required.",
+        "pricing": ""
+      },
+      {
+        "model_id": "bytedance/v1-pro-image-to-video",
+        "display_name": "Bytedance V1 Pro Image to Video",
+        "kind": "video",
+        "api_style": "market-jobs-api",
+        "create_path": "POST /api/v1/jobs/createTask",
+        "input_schema": "| Param | Type | Required | Default | Allowed Values / Notes |\n|---|---|---|---|---|\n| model | string | yes | bytedance/v1-pro-image-to-video | bytedance/v1-pro-image-to-video |\n| callBackUrl | string (uri) | no | — | Webhook URL |\n| input.prompt | string | yes | — | max 10000 chars |\n| input.image_url | string | yes | — | jpeg/png/webp; max 10MB |\n| input.resolution | string | no | 720p | 480p, 720p, 1080p |\n| input.duration | string | no | \"5\" | \"5\", \"10\" (string enum, seconds) |\n| input.camera_fixed | boolean | no | — | true=fixed camera, false=dynamic |\n| input.seed | number | no | -1 | -1 to 2147483647; -1 = random |\n| input.enable_safety_checker | boolean | no | — | false=disable (always on in Playground) |\n| input.nsfw_checker | boolean | no | false | false=disable content filtering |",
+        "notes": "i2v only. Both prompt and image_url are required. Full param set including seed and camera_fixed. No generate_audio.",
+        "pricing": ""
+      },
+      {
+        "model_id": "bytedance/v1-pro-text-to-video",
+        "display_name": "Bytedance V1 Pro Text to Video",
+        "kind": "video",
+        "api_style": "market-jobs-api",
+        "create_path": "POST /api/v1/jobs/createTask",
+        "input_schema": "| Param | Type | Required | Default | Allowed Values / Notes |\n|---|---|---|---|---|\n| model | string | yes | bytedance/v1-pro-text-to-video | bytedance/v1-pro-text-to-video |\n| callBackUrl | string (uri) | no | — | Webhook URL |\n| input.prompt | string | yes | — | max 10000 chars |\n| input.aspect_ratio | string | no | 16:9 | 21:9, 16:9, 4:3, 1:1, 3:4, 9:16 |\n| input.resolution | string | no | 720p | 480p, 720p, 1080p |\n| input.duration | string | no | \"5\" | \"5\", \"10\" (string enum, seconds) |\n| input.camera_fixed | boolean | no | — | true=fixed camera, false=dynamic |\n| input.seed | number | no | -1 | -1 to 2147483647; -1 = random |\n| input.enable_safety_checker | boolean | no | — | false=disable safety checker |\n| input.nsfw_checker | boolean | no | false | false=disable content filtering |",
+        "notes": "t2v only. No image input params. Has camera_fixed, seed, enable_safety_checker. aspect_ratio includes 21:9. No generate_audio.",
+        "pricing": ""
+      },
+      {
+        "model_id": "bytedance/v1-lite-image-to-video",
+        "display_name": "Bytedance V1 Lite Image to Video",
+        "kind": "video",
+        "api_style": "market-jobs-api",
+        "create_path": "POST /api/v1/jobs/createTask",
+        "input_schema": "| Param | Type | Required | Default | Allowed Values / Notes |\n|---|---|---|---|---|\n| model | string | yes | bytedance/v1-lite-image-to-video | bytedance/v1-lite-image-to-video |\n| callBackUrl | string (uri) | no | — | Webhook URL |\n| input.prompt | string | yes | — | max 10000 chars |\n| input.image_url | string | yes | — | jpeg/png/webp; max 10MB (start frame) |\n| input.end_image_url | string | no | — | jpeg/png/webp; max 10MB (end frame); defaults to None |\n| input.resolution | string | no | 720p | 480p, 720p, 1080p |\n| input.duration | string | no | \"5\" | \"5\", \"10\" (string enum, seconds) |\n| input.camera_fixed | boolean | no | — | true=fixed camera, false=dynamic |\n| input.seed | number | no | -1 | -1 to 2147483647; -1 = random |\n| input.enable_safety_checker | boolean | no | — | false=disable safety checker |\n| input.nsfw_checker | boolean | no | false | false=disable content filtering |",
+        "notes": "i2v only. Unique feature: end_image_url param allows specifying both start and end frames (like first+last frame mode in Seedance 2 but via separate named params). Both prompt and image_url are required. Has seed, camera_fixed, enable_safety_checker.",
+        "pricing": ""
+      },
+      {
+        "model_id": "bytedance/v1-lite-text-to-video",
+        "display_name": "Bytedance V1 Lite Text to Video",
+        "kind": "video",
+        "api_style": "market-jobs-api",
+        "create_path": "POST /api/v1/jobs/createTask",
+        "input_schema": "| Param | Type | Required | Default | Allowed Values / Notes |\n|---|---|---|---|---|\n| model | string | yes | bytedance/v1-lite-text-to-video | bytedance/v1-lite-text-to-video |\n| callBackUrl | string (uri) | no | — | Webhook URL |\n| input.prompt | string | yes | — | max 10000 chars |\n| input.aspect_ratio | string | no | 16:9 | 16:9, 4:3, 1:1, 3:4, 9:16, 9:21 (note: 9:21 not 21:9 — inverted vs v1-pro-t2v) |\n| input.resolution | string | no | 720p | 480p, 720p, 1080p |\n| input.duration | string | no | \"5\" | \"5\", \"10\" (string enum, seconds) |\n| input.camera_fixed | boolean | no | — | true=fixed camera, false=dynamic |\n| input.seed | integer | no | — | random seed |\n| input.enable_safety_checker | boolean | no | — | false=disable safety checker |\n| input.nsfw_checker | boolean | no | false | false=disable content filtering |",
+        "notes": "t2v only. aspect_ratio enum uses '9:21' (not '21:9' as in v1-pro-t2v) — verify if this is intentional or a doc typo. No generate_audio. seed type is integer here vs number in other V1 models.",
+        "pricing": ""
+      }
+    ]
+  },
+  "otherVideo": {
+    "report": "# kie.ai Video Models — CLI Spec Research\n\nAll models confirmed from live documentation fetched 2026-06-10.\n\n## API Architecture: Two Distinct Styles\n\n```\nMarket Jobs API (unified)                Dedicated API (Veo3.1)\nPOST /api/v1/jobs/createTask             POST /api/v1/veo/generate\n  body.model = \"<vendor>/<model>\"          body.model = \"veo3\"|\"veo3_fast\"|\"veo3_lite\"\n  body.input = { ...params }               flat body (no \"input\" wrapper)\n  \n  Status: GET /api/v1/jobs/getTaskDetail   Status: GET /api/v1/veo/record-info?taskId=\n  (market/common/get-task-detail)          HD upgrade: GET /api/v1/veo/get-1080p-video?taskId=\n```\n\nAll endpoints share base URL: `https://api.kie.ai`\nAuth: `Authorization: Bearer <API_KEY>` on all requests.\n\n---\n\n## Model Index\n\n### 1. Kling 3.0 — market/jobs API\n- model_id: `kling-3.0/video`\n- Supports single-shot and multi-shot (up to 5 shots), element references (@element_name syntax), sound effects, 4K mode\n- image_urls: first frame (index 0) and optional last frame (index 1); in multi_shots mode only first frame\n\n### 2. Kling 2.6 Text-to-Video — market/jobs API\n- model_id: `kling-2.6/text-to-video`\n- Simple t2v, aspect_ratio enum, duration 5|10s, optional sound\n\n### 3. Kling 2.6 Image-to-Video — market/jobs API\n- model_id: `kling-2.6/image-to-video`\n- image_urls: array, maxItems 1 (JPEG/PNG, max 10MB), required\n- duration 5|10s, optional sound\n\n### 4. Wan 2.6 Text-to-Video — market/jobs API\n- model_id: `wan/2-6-text-to-video`\n- Supports Chinese and English prompts (up to 5000 chars)\n- duration: 5|10|15s, resolution: 720p|1080p\n\n### 5. Wan 2.6 Image-to-Video — market/jobs API\n- model_id: `wan/2-6-image-to-video`\n- image_urls: array maxItems 1 (JPEG/PNG/WebP, min 256x256, max 10MB), required\n- duration: 5|10|15s, resolution: 720p|1080p\n\n### 6. Hailuo 2.3 Pro Image-to-Video — market/jobs API\n- model_id: `hailuo/2-3-image-to-video-pro`\n- image_url: single string (not array) — JPEG/PNG/WebP max 10MB, required\n- duration: 6|10s (10s not supported at 1080P), resolution: 768P|1080P\n\n### 7. Grok Imagine Text-to-Video — market/jobs API\n- model_id: `grok-imagine/text-to-video`\n- aspect_ratio: 2:3|3:2|1:1|16:9|9:16 (default 2:3)\n- mode: fun|normal|spicy (default normal)\n- duration: number 6-30 (step 1), resolution: 480p|720p (default 480p)\n\n### 8. Grok Imagine Image-to-Video — market/jobs API\n- model_id: `grok-imagine/image-to-video`\n- image_urls: array up to 7 (JPEG/PNG/WebP, max 10MB each); OR task_id from prior grok image task + index (0-5)\n- Spicy mode unavailable for external image_urls\n- aspect_ratio only applies to multi-image mode; single image auto-adapts\n\n### 9. Veo3.1 — DEDICATED API (different paths, no market/jobs wrapper)\n- model values: `veo3` | `veo3_fast` | `veo3_lite`\n- Create: POST /api/v1/veo/generate (flat body, no \"input\" object)\n- Status: GET /api/v1/veo/record-info?taskId=\n- HD upgrade: GET /api/v1/veo/get-1080p-video?taskId=\n- generationType: TEXT_2_VIDEO | FIRST_AND_LAST_FRAMES_2_VIDEO | REFERENCE_2_VIDEO (fast only)\n- imageUrls: 1-2 for i2v, 1-3 for REFERENCE_2_VIDEO\n- aspect_ratio: 16:9|9:16|Auto\n- resolution: 720p|1080p|4k (default 720p; 4k costs ~2x fast-mode credits)\n- duration: 4|6|8 seconds (default 8)\n- enableTranslation: bool (auto-translate prompt to English)\n- watermark: string (optional watermark text)\n\n### 10. Topaz Video Upscale — market/jobs API\n- model_id: `topaz/video-upscale`\n- video_url: string, required (MP4/MOV/MKV, max 50MB)\n- upscale_factor: 1|2|4 (default 2)\n- Not a generation model — enhancement/upscale only",
+    "models": [
+      {
+        "model_id": "kling-3.0/video",
+        "display_name": "Kling 3.0",
+        "kind": "video",
+        "api_style": "market-jobs-api",
+        "create_path": "POST /api/v1/jobs/createTask",
+        "input_schema": "| Param | Type | Required | Default | Allowed Values |\n|---|---|---|---|---|\n| prompt | string (max no explicit limit) | yes (when multi_shots=false) | — | any text; use @element_name syntax for element refs |\n| image_urls | array of URI | no | — | index 0 = first frame, index 1 = last frame (single-shot); only index 0 supported in multi-shot; JPEG/PNG max 10MB each |\n| sound | boolean | yes | false | true, false |\n| duration | string | yes | \"5\" | \"3\",\"4\",\"5\",\"6\",\"7\",\"8\",\"9\",\"10\",\"11\",\"12\",\"13\",\"14\",\"15\" |\n| aspect_ratio | string | yes (optional if image_urls provided) | \"16:9\" | \"16:9\", \"9:16\", \"1:1\" |\n| mode | string | yes | \"pro\" | \"std\", \"pro\", \"4K\" |\n| multi_shots | boolean | yes | false | true, false |\n| multi_prompt | array of {prompt: string (max 500 chars), duration: integer 1-12} | yes (required by schema, but only meaningful when multi_shots=true) | — | up to 5 shots |\n| kling_elements | array of {name, description, element_input_urls: 2-4 URIs} | no | — | max 3 elements; JPEG/PNG max 10MB each |",
+        "notes": "Resolution depends on mode x aspect_ratio: std=1280x720/720x1280/720x720; pro=1920x1080/1080x1920/1080x1080; 4K=3840x2160/2160x3840/2160x2160. Output: {code, msg, data: {taskId}}. Query status via GET /api/v1/jobs/getTaskDetail. 4K mode costs more credits. multi_shots=true: sound defaults true, only first frame supported, each shot max 500 chars, @element occupies 37 chars.",
+        "pricing": ""
+      },
+      {
+        "model_id": "kling-2.6/text-to-video",
+        "display_name": "Kling 2.6 Text to Video",
+        "kind": "video",
+        "api_style": "market-jobs-api",
+        "create_path": "POST /api/v1/jobs/createTask",
+        "input_schema": "| Param | Type | Required | Default | Allowed Values |\n|---|---|---|---|---|\n| prompt | string (max 1000 chars) | yes | — | any text |\n| sound | boolean | yes | — | true, false |\n| aspect_ratio | string | yes | \"1:1\" | \"1:1\", \"16:9\", \"9:16\" |\n| duration | string | yes | \"5\" | \"5\", \"10\" |",
+        "notes": "Output: {code, msg, data: {taskId}}. Query status via GET /api/v1/jobs/getTaskDetail.",
+        "pricing": ""
+      },
+      {
+        "model_id": "kling-2.6/image-to-video",
+        "display_name": "Kling 2.6 Image to Video",
+        "kind": "video",
+        "api_style": "market-jobs-api",
+        "create_path": "POST /api/v1/jobs/createTask",
+        "input_schema": "| Param | Type | Required | Default | Allowed Values |\n|---|---|---|---|---|\n| prompt | string (max 1000 chars) | yes | — | any text |\n| image_urls | array of URI (maxItems 1) | yes | — | JPEG/PNG, max 10MB |\n| sound | boolean | yes | — | true, false |\n| duration | string | yes | \"5\" | \"5\", \"10\" |",
+        "notes": "image_urls accepts exactly 1 image. No aspect_ratio param — aspect ratio inferred from input image. Output: {code, msg, data: {taskId}}.",
+        "pricing": ""
+      },
+      {
+        "model_id": "wan/2-6-text-to-video",
+        "display_name": "Wan 2.6 Text to Video",
+        "kind": "video",
+        "api_style": "market-jobs-api",
+        "create_path": "POST /api/v1/jobs/createTask",
+        "input_schema": "| Param | Type | Required | Default | Allowed Values |\n|---|---|---|---|---|\n| prompt | string (1-5000 chars) | yes | — | Chinese or English |\n| duration | string | no | \"5\" | \"5\", \"10\", \"15\" |\n| resolution | string | no | \"1080p\" | \"720p\", \"1080p\" |\n| nsfw_checker | boolean | no | — | true, false |",
+        "notes": "No aspect_ratio param. Output: {code, msg, data: {taskId}}. Supports both Chinese and English prompts.",
+        "pricing": ""
+      },
+      {
+        "model_id": "wan/2-6-image-to-video",
+        "display_name": "Wan 2.6 Image to Video",
+        "kind": "video",
+        "api_style": "market-jobs-api",
+        "create_path": "POST /api/v1/jobs/createTask",
+        "input_schema": "| Param | Type | Required | Default | Allowed Values |\n|---|---|---|---|---|\n| prompt | string (2-5000 chars) | yes | — | Chinese or English |\n| image_urls | array of URI (maxItems 1) | yes | — | JPEG/PNG/WebP, max 10MB, min 256x256px |\n| duration | string | no | \"5\" | \"5\", \"10\", \"15\" |\n| resolution | string | no | \"1080p\" | \"720p\", \"1080p\" |\n| nsfw_checker | boolean | no | false | true, false |",
+        "notes": "No aspect_ratio param. image_urls array but maxItems=1. Output: {code, msg, data: {taskId}}.",
+        "pricing": ""
+      },
+      {
+        "model_id": "hailuo/2-3-image-to-video-pro",
+        "display_name": "Hailuo 2.3 Pro Image to Video",
+        "kind": "video",
+        "api_style": "market-jobs-api",
+        "create_path": "POST /api/v1/jobs/createTask",
+        "input_schema": "| Param | Type | Required | Default | Allowed Values |\n|---|---|---|---|---|\n| prompt | string (max 5000 chars) | yes | — | any text |\n| image_url | string URI (single, not array) | yes | — | JPEG/PNG/WebP, max 10MB |\n| duration | string | no | \"6\" | \"6\", \"10\" |\n| resolution | string | no | \"768P\" | \"768P\", \"1080P\" |\n| nsfw_checker | boolean | no | false | true, false |",
+        "notes": "IMPORTANT: image_url is a single string, not an array (unlike other models). 10s duration is not supported at 1080P resolution. Output: {code, msg, data: {taskId}}.",
+        "pricing": ""
+      },
+      {
+        "model_id": "grok-imagine/text-to-video",
+        "display_name": "Grok Imagine Text to Video",
+        "kind": "video",
+        "api_style": "market-jobs-api",
+        "create_path": "POST /api/v1/jobs/createTask",
+        "input_schema": "| Param | Type | Required | Default | Allowed Values |\n|---|---|---|---|---|\n| prompt | string (max 5000 chars) | yes | — | English |\n| aspect_ratio | string | no | \"2:3\" | \"2:3\", \"3:2\", \"1:1\", \"16:9\", \"9:16\" |\n| mode | string | no | \"normal\" | \"fun\", \"normal\", \"spicy\" |\n| duration | number | no | — | 6-30 (integer, step 1) |\n| resolution | string | no | \"480p\" | \"480p\", \"720p\" |\n| nsfw_checker | boolean | no | false | true, false |",
+        "notes": "duration is a number type (not string). Default aspect_ratio is 2:3 (portrait). Output: {code, msg, data: {taskId}}.",
+        "pricing": ""
+      },
+      {
+        "model_id": "grok-imagine/image-to-video",
+        "display_name": "Grok Imagine Image to Video",
+        "kind": "video",
+        "api_style": "market-jobs-api",
+        "create_path": "POST /api/v1/jobs/createTask",
+        "input_schema": "| Param | Type | Required | Default | Allowed Values |\n|---|---|---|---|---|\n| image_urls | array of URI (max 7) | no* | — | JPEG/PNG/WebP, max 10MB each; use @image(n) syntax in prompt to reference; mutually exclusive with task_id |\n| task_id | string (max 100 chars) | no* | — | Task ID from prior grok-imagine/text-to-image; mutually exclusive with image_urls |\n| index | integer | no | 0 | 0-5; only used with task_id |\n| prompt | string (max 5000 chars) | no | — | English; reference images with @image1, @image2 etc |\n| mode | string | no | \"normal\" | \"fun\", \"normal\", \"spicy\" (spicy unavailable for external image_urls) |\n| duration | string | no | — | 6-30 (integer, step 1) |\n| resolution | string | no | \"480p\" | \"480p\", \"720p\" |\n| aspect_ratio | string | no | \"16:9\" | \"2:3\", \"3:2\", \"1:1\", \"16:9\", \"9:16\" (only applies in multi-image mode; single image auto-adapts) |\n| nsfw_checker | boolean | no | false | true, false |",
+        "notes": "Either image_urls or task_id must be provided (API marks both as optional but one is required for i2v). Spicy mode blocked when using external image_urls. aspect_ratio only meaningful with multiple images. Up to 7 images supported. Output: {code, msg, data: {taskId}}.",
+        "pricing": ""
+      },
+      {
+        "model_id": "veo3",
+        "display_name": "Veo3.1 (Quality / Fast / Lite)",
+        "kind": "video",
+        "api_style": "dedicated-api",
+        "create_path": "POST /api/v1/veo/generate",
+        "input_schema": "| Param | Type | Required | Default | Allowed Values |\n|---|---|---|---|---|\n| prompt | string | yes | — | any language (auto-translated if enableTranslation=true) |\n| model | string | no | \"veo3_fast\" | \"veo3\", \"veo3_fast\", \"veo3_lite\" |\n| imageUrls | array of string | no | — | 1-2 images for FIRST_AND_LAST_FRAMES_2_VIDEO; 1-3 for REFERENCE_2_VIDEO; JPEG/PNG/WebP |\n| generationType | string | no | auto-detected | \"TEXT_2_VIDEO\", \"FIRST_AND_LAST_FRAMES_2_VIDEO\", \"REFERENCE_2_VIDEO\" (REFERENCE_2_VIDEO: veo3_fast only) |\n| aspect_ratio | string | no | \"16:9\" | \"16:9\", \"9:16\", \"Auto\" |\n| resolution | string | no | \"720p\" | \"720p\", \"1080p\", \"4k\" |\n| duration | integer | no | 8 | 4, 6, 8 |\n| callBackUrl | string URI | no | — | webhook URL for completion notification |\n| enableTranslation | boolean | no | false | true, false |\n| watermark | string | no | — | watermark text overlaid on video |\n| enableFallback | boolean | no | false | DEPRECATED — do not use |",
+        "notes": "DEDICATED API — completely different paths from market jobs API. Create: POST /api/v1/veo/generate (flat body, no 'input' wrapper, no 'model' field in market-jobs sense). Status poll: GET /api/v1/veo/record-info?taskId= (returns successFlag: 0=generating, 1=success, 2=failed, 3=generation-failed; resultUrls is JSON-encoded string). HD upgrade: GET /api/v1/veo/get-1080p-video?taskId= (16:9 videos only, requires a few minutes after base generation). 4K resolution costs ~2x fast-mode credits. veo3_lite is the most cost-effective. REFERENCE_2_VIDEO mode (material-to-video) is veo3_fast only. Pricing: 25% of Google direct API pricing per kie.ai/pricing.",
+        "pricing": "Priced at 25% of Google's direct Veo3.1 API pricing. 4K resolution costs approximately 2x the credits of generating a Fast mode video. See https://kie.ai/pricing for full details."
+      },
+      {
+        "model_id": "topaz/video-upscale",
+        "display_name": "Topaz Video Upscale",
+        "kind": "video",
+        "api_style": "market-jobs-api",
+        "create_path": "POST /api/v1/jobs/createTask",
+        "input_schema": "| Param | Type | Required | Default | Allowed Values |\n|---|---|---|---|---|\n| video_url | string URI | yes | — | MP4/MOV/MKV (video/mp4, video/quicktime, video/x-matroska), max 50MB |\n| upscale_factor | string | no | \"2\" | \"1\", \"2\", \"4\" |",
+        "notes": "Enhancement/upscale model — not a generation model. Doubles/quadruples both width and height. upscale_factor=2 doubles dimensions, =4 quadruples. Output: {code, msg, data: {taskId}}. Query status via GET /api/v1/jobs/getTaskDetail.",
+        "pricing": ""
+      }
+    ]
+  },
+  "images": {
+    "report": "## kie.ai Image Models — CLI Spec Research\n\nAll 12 image models share the same API style: POST to `/api/v1/jobs/createTask` on `https://api.kie.ai` with a JSON body containing `model`, optional `callBackUrl`, and `input`. The response is `{ code, msg, data: { taskId } }` (seedream/5-lite also returns `recordId`). Auth is `Authorization: Bearer <API_KEY>`.\n\n### Google Nano Banana family (4 models)\n\n`google/nano-banana` — text-to-image, prompt required, aspect_ratio enum (11 values + auto), output_format png/jpeg, nsfw_checker bool, image_size deprecated alias for aspect_ratio.\n\n`google/nano-banana-edit` — image editing, prompt + image_urls (array, up to 10, JPEG/PNG/WEBP, max 10MB each) required, same aspect_ratio + output_format as above.\n\n`nano-banana-2` — text-to-image + optional image_input (up to 14 images, max 30MB), aspect_ratio has 15 values including 1:4/4:1/1:8/8:1, resolution enum 1K/2K/4K (default 1K), output_format png/jpg (default jpg). Note: model_id is `nano-banana-2` not prefixed with `google/`.\n\n`nano-banana-pro` — text-to-image + optional image_input (up to 8 images, max 30MB), aspect_ratio 11 values (same as nano-banana), resolution 1K/2K/4K, output_format png/jpg (default png). model_id is `nano-banana-pro`.\n\n### Seedream family (3 models)\n\n`seedream/4.5-text-to-image` — prompt (max 3000 chars) required, aspect_ratio 8 values (1:1/4:3/3:4/16:9/9:16/2:3/3:2/21:9), quality basic/high (basic=2K, high=4K), nsfw_checker bool.\n\n`seedream/4.5-edit` — prompt + image_urls (up to 14 images, max 10MB each) required, same aspect_ratio + quality params.\n\n`seedream/5-lite-text-to-image` — same schema as 4.5-text-to-image (prompt 3–3000 chars, aspect_ratio 8 values, quality basic/high). Response also includes `recordId` alongside `taskId`.\n\n### Other models\n\n`z-image` — prompt (max 1000 chars) + aspect_ratio required; aspect_ratio limited to 5 values (1:1/4:3/3:4/16:9/9:16), nsfw_checker bool.\n\n`flux-2/pro-text-to-image` — prompt (3–5000 chars) + aspect_ratio + resolution required; aspect_ratio 7 values (1:1/4:3/3:4/16:9/9:16/3:2/2:3), resolution 1K/2K, nsfw_checker bool.\n\n`qwen/image-edit` — prompt (max 2000 chars) + image_url (single string, not array) required; rich optional params: acceleration (none/regular/high), image_size (6 named sizes), num_inference_steps (2–49, default 25), guidance_scale (0–20, default 4), seed (int), sync_mode (bool), num_images (1–4 as string enum), enable_safety_checker (bool), output_format jpeg/png, negative_prompt (max 500 chars), nsfw_checker bool.\n\n`topaz/image-upscale` — image_url (single string, max 10MB) + upscale_factor (string enum: 1/2/4/8, default \"2\") required. No prompt.\n\n`recraft/remove-background` — image (single URL, max 5MB, max 4096px, min 256px) required. No prompt, no other params.\n\n### Notes on pricing\nNo pricing or credit cost information appears on any of the fetched documentation pages.",
+    "models": [
+      {
+        "model_id": "google/nano-banana",
+        "display_name": "Google Nano Banana",
+        "kind": "image",
+        "api_style": "market-jobs-api",
+        "create_path": "/api/v1/jobs/createTask",
+        "input_schema": "| param | type | required | default | allowed values |\n|---|---|---|---|---|\n| prompt | string (max 5000) | yes | — | — |\n| aspect_ratio | string | no | 1:1 | 1:1, 9:16, 16:9, 3:4, 4:3, 3:2, 2:3, 5:4, 4:5, 21:9, auto |\n| output_format | string | no | png | png, jpeg |\n| image_size | string (deprecated) | no | 1:1 | same as aspect_ratio |\n| nsfw_checker | boolean | no | false | — |",
+        "pricing": "",
+        "notes": "Text-to-image. image_size is deprecated alias for aspect_ratio."
+      },
+      {
+        "model_id": "google/nano-banana-edit",
+        "display_name": "Google Nano Banana Edit",
+        "kind": "image",
+        "api_style": "market-jobs-api",
+        "create_path": "/api/v1/jobs/createTask",
+        "input_schema": "| param | type | required | default | allowed values |\n|---|---|---|---|---|\n| prompt | string (max 5000) | yes | — | — |\n| image_urls | array of URI (max 10, JPEG/PNG/WEBP, max 10MB each) | yes | — | — |\n| aspect_ratio | string | no | 1:1 | 1:1, 9:16, 16:9, 3:4, 4:3, 3:2, 2:3, 5:4, 4:5, 21:9, auto |\n| output_format | string | no | png | png, jpeg |\n| image_size | string (deprecated) | no | 1:1 | same as aspect_ratio |",
+        "pricing": "",
+        "notes": "Image editing. Requires at least one input image via image_urls."
+      },
+      {
+        "model_id": "nano-banana-2",
+        "display_name": "Google Nano Banana 2",
+        "kind": "image",
+        "api_style": "market-jobs-api",
+        "create_path": "/api/v1/jobs/createTask",
+        "input_schema": "| param | type | required | default | allowed values |\n|---|---|---|---|---|\n| prompt | string (max 20000) | yes | — | — |\n| image_input | array of URI (max 14, JPEG/PNG/WEBP, max 30MB each) | no | [] | — |\n| aspect_ratio | string | no | auto | 1:1, 1:4, 1:8, 2:3, 3:2, 3:4, 4:1, 4:3, 4:5, 5:4, 8:1, 9:16, 16:9, 21:9, auto |\n| resolution | string | no | 1K | 1K, 2K, 4K |\n| output_format | string | no | jpg | png, jpg |",
+        "pricing": "",
+        "notes": "Text-to-image with optional multi-image reference. Note: model_id has no google/ prefix. Aspect ratio list is the largest (15 values). Default output_format is jpg (unlike other Google models)."
+      },
+      {
+        "model_id": "nano-banana-pro",
+        "display_name": "Google Nano Banana Pro",
+        "kind": "image",
+        "api_style": "market-jobs-api",
+        "create_path": "/api/v1/jobs/createTask",
+        "input_schema": "| param | type | required | default | allowed values |\n|---|---|---|---|---|\n| prompt | string (max 10000) | yes | — | — |\n| image_input | array of URI (max 8, JPEG/PNG/WEBP, max 30MB each) | no | [] | — |\n| aspect_ratio | string | no | 1:1 | 1:1, 2:3, 3:2, 3:4, 4:3, 4:5, 5:4, 9:16, 16:9, 21:9, auto |\n| resolution | string | no | 1K | 1K, 2K, 4K |\n| output_format | string | no | png | png, jpg |",
+        "pricing": "",
+        "notes": "Text-to-image with optional multi-image reference. Note: model_id has no google/ prefix. Documented as Google Pro Image to Image."
+      },
+      {
+        "model_id": "seedream/4.5-text-to-image",
+        "display_name": "Seedream 4.5 Text to Image",
+        "kind": "image",
+        "api_style": "market-jobs-api",
+        "create_path": "/api/v1/jobs/createTask",
+        "input_schema": "| param | type | required | default | allowed values |\n|---|---|---|---|---|\n| prompt | string (max 3000) | yes | — | — |\n| aspect_ratio | string | yes | 1:1 | 1:1, 4:3, 3:4, 16:9, 9:16, 2:3, 3:2, 21:9 |\n| quality | string | yes | basic | basic (2K), high (4K) |\n| nsfw_checker | boolean | no | false | — |",
+        "pricing": "",
+        "notes": "High-quality photorealistic image generation. quality=basic outputs 2K, quality=high outputs 4K."
+      },
+      {
+        "model_id": "seedream/4.5-edit",
+        "display_name": "Seedream 4.5 Edit",
+        "kind": "image",
+        "api_style": "market-jobs-api",
+        "create_path": "/api/v1/jobs/createTask",
+        "input_schema": "| param | type | required | default | allowed values |\n|---|---|---|---|---|\n| prompt | string (max 3000) | yes | — | — |\n| image_urls | array of URI (max 14, JPEG/PNG/WEBP, max 10MB each) | yes | — | — |\n| aspect_ratio | string | yes | 1:1 | 1:1, 4:3, 3:4, 16:9, 9:16, 2:3, 3:2, 21:9 |\n| quality | string | yes | basic | basic (2K), high (4K) |\n| nsfw_checker | boolean | no | false | — |",
+        "pricing": "",
+        "notes": "Image editing variant of Seedream 4.5. Requires image_urls array."
+      },
+      {
+        "model_id": "seedream/5-lite-text-to-image",
+        "display_name": "Seedream 5.0 Lite Text to Image",
+        "kind": "image",
+        "api_style": "market-jobs-api",
+        "create_path": "/api/v1/jobs/createTask",
+        "input_schema": "| param | type | required | default | allowed values |\n|---|---|---|---|---|\n| prompt | string (3–3000 chars) | yes | — | — |\n| aspect_ratio | string | yes | 1:1 | 1:1, 4:3, 3:4, 16:9, 9:16, 2:3, 3:2, 21:9 |\n| quality | string | yes | basic | basic (2K), high (4K) |\n| nsfw_checker | boolean | no | false | — |",
+        "pricing": "",
+        "notes": "Schema identical to seedream/4.5-text-to-image. Response includes both taskId and recordId. Minimum prompt length is 3 characters."
+      },
+      {
+        "model_id": "z-image",
+        "display_name": "Z-Image",
+        "kind": "image",
+        "api_style": "market-jobs-api",
+        "create_path": "/api/v1/jobs/createTask",
+        "input_schema": "| param | type | required | default | allowed values |\n|---|---|---|---|---|\n| prompt | string (max 1000) | yes | — | — |\n| aspect_ratio | string | yes | 1:1 | 1:1, 4:3, 3:4, 16:9, 9:16 |\n| nsfw_checker | boolean | no | false | — |",
+        "pricing": "",
+        "notes": "Simple text-to-image. Most limited aspect_ratio set (5 values). Shortest prompt cap at 1000 chars."
+      },
+      {
+        "model_id": "flux-2/pro-text-to-image",
+        "display_name": "Flux-2 Pro Text to Image",
+        "kind": "image",
+        "api_style": "market-jobs-api",
+        "create_path": "/api/v1/jobs/createTask",
+        "input_schema": "| param | type | required | default | allowed values |\n|---|---|---|---|---|\n| prompt | string (3–5000 chars) | yes | — | — |\n| aspect_ratio | string | yes | 1:1 | 1:1, 4:3, 3:4, 16:9, 9:16, 3:2, 2:3 |\n| resolution | string | yes | 1K | 1K, 2K |\n| nsfw_checker | boolean | no | false | — |",
+        "pricing": "",
+        "notes": "High-quality photorealistic generation. Resolution maxes at 2K (no 4K). Minimum prompt length 3 chars."
+      },
+      {
+        "model_id": "qwen/image-edit",
+        "display_name": "Qwen Image Edit",
+        "kind": "image",
+        "api_style": "market-jobs-api",
+        "create_path": "/api/v1/jobs/createTask",
+        "input_schema": "| param | type | required | default | allowed values |\n|---|---|---|---|---|\n| prompt | string (max 2000) | yes | — | — |\n| image_url | string URI (JPEG/PNG/WEBP, max 10MB) | yes | — | — |\n| acceleration | string | no | none | none, regular, high |\n| image_size | string | no | landscape_4_3 | square, square_hd, portrait_4_3, portrait_16_9, landscape_4_3, landscape_16_9 |\n| num_inference_steps | number (2–49) | no | 25 | — |\n| guidance_scale | number (0–20, step 0.1) | no | 4 | — |\n| seed | integer | no | — | — |\n| sync_mode | boolean | no | false | — |\n| num_images | string | no | — | 1, 2, 3, 4 |\n| enable_safety_checker | boolean | no | true | — |\n| output_format | string | no | png | jpeg, png |\n| negative_prompt | string (max 500) | no | — | — |\n| nsfw_checker | boolean | no | false | — |",
+        "pricing": "",
+        "notes": "Most parameter-rich model. Takes a single image_url string (not array). image_size uses named sizes rather than aspect ratios. num_images is a string enum not integer."
+      },
+      {
+        "model_id": "topaz/image-upscale",
+        "display_name": "Topaz Image Upscale",
+        "kind": "image",
+        "api_style": "market-jobs-api",
+        "create_path": "/api/v1/jobs/createTask",
+        "input_schema": "| param | type | required | default | allowed values |\n|---|---|---|---|---|\n| image_url | string URI (JPEG/PNG/WEBP, max 10MB) | yes | — | — |\n| upscale_factor | string | yes | 2 | 1, 2, 4, 8 |",
+        "pricing": "",
+        "notes": "Upscaling only — no prompt param. upscale_factor is a string enum (not numeric). Factor 8 means 8x width and height."
+      },
+      {
+        "model_id": "recraft/remove-background",
+        "display_name": "Recraft Remove Background",
+        "kind": "image",
+        "api_style": "market-jobs-api",
+        "create_path": "/api/v1/jobs/createTask",
+        "input_schema": "| param | type | required | default | allowed values |\n|---|---|---|---|---|\n| image | string URI (JPEG/PNG/WEBP, max 5MB, max 4096px, min 256px) | yes | — | — |",
+        "pricing": "",
+        "notes": "Background removal only — no prompt, no other params. Uses field name `image` (not image_url). Strictest size limits: max 5MB, max 16MP, max dimension 4096px, min dimension 256px."
+      }
+    ]
+  },
+  "cost": {
+    "found_estimate_endpoint": false,
+    "endpoints": [
+      {
+        "method": "GET",
+        "url": "https://api.kie.ai/api/v1/chat/credit",
+        "verified_live": true,
+        "auth_model": "bearer api key",
+        "notes": "Returns current credit balance as a float. No parameters required. Documented in https://docs.kie.ai/common-api/get-account-credits.md",
+        "request_sample": "curl -s -H \"Authorization: Bearer $KIE_API_KEY\" https://api.kie.ai/api/v1/chat/credit",
+        "response_sample": "{\"code\":200,\"msg\":\"success\",\"data\":10051.0}"
+      },
+      {
+        "method": "GET",
+        "url": "https://api.kie.ai/client/v1/model-pricing/count",
+        "verified_live": true,
+        "auth_model": "bearer api key",
+        "notes": "Returns count of pricing entries split by interface type. Site-internal endpoint but accessible via api.kie.ai with Bearer token. NOT in public docs.",
+        "request_sample": "curl -s -H \"Authorization: Bearer $KIE_API_KEY\" https://api.kie.ai/client/v1/model-pricing/count",
+        "response_sample": "{\"code\":200,\"msg\":\"success\",\"data\":{\"all\":313,\"image\":72,\"video\":174,\"music\":24,\"chat\":43}}"
+      },
+      {
+        "method": "POST",
+        "url": "https://api.kie.ai/client/v1/model-pricing/page",
+        "verified_live": true,
+        "auth_model": "bearer api key",
+        "notes": "Paginated pricing table — the canonical source for per-model credit costs. Body params: pageNum (int), pageSize (int, max 100), interfaceType (string: 'video'|'image'|'music'|'chat', omit for all), modelDescription (string, optional fuzzy filter). Each record has: modelDescription (string), interfaceType, provider, creditPrice (string numeric), creditUnit (string e.g. 'per second'|'per video'|'per image'|'per megapixel'|'per million tokens'), usdPrice (string numeric), falPrice (string), discountRate (float), anchor (URL string), discountPrice (bool). NOT in public docs — discovered via JS bundle analysis.",
+        "request_sample": "curl -s -X POST https://api.kie.ai/client/v1/model-pricing/page -H \"Authorization: Bearer $KIE_API_KEY\" -H \"Content-Type: application/json\" -d '{\"pageNum\":1,\"pageSize\":100,\"interfaceType\":\"video\"}'",
+        "response_sample": "{\"code\":200,\"msg\":\"success\",\"data\":{\"records\":[{\"modelDescription\":\"bytedance/seedance-2 fast, 720p no video input\",\"interfaceType\":\"video\",\"provider\":\"ByteDance\",\"creditPrice\":\"33\",\"creditUnit\":\"per second\",\"usdPrice\":\"0.165\",\"falPrice\":\"0.2419\",\"discountRate\":31.79,\"anchor\":\"https://kie.ai/seedance-2-0?model=bytedance%2Fseedance-2-fast\",\"discountPrice\":false}],\"total\":174,\"size\":100,\"current\":1,\"pages\":2}}"
+      },
+      {
+        "method": "POST",
+        "url": "https://api.kie.ai/api/v1/common/download-url",
+        "verified_live": false,
+        "auth_model": "bearer api key",
+        "notes": "Generates a 20-minute temporary download link for a generated file URL. Body: {\"url\": \"<kie.ai generated file URL>\"}. Documented at https://docs.kie.ai/common-api/download-url.md. Not an estimate endpoint — included for completeness.",
+        "request_sample": "curl -s -X POST https://api.kie.ai/api/v1/common/download-url -H \"Authorization: Bearer $KIE_API_KEY\" -H \"Content-Type: application/json\" -d '{\"url\":\"https://tempfile.1f6c...\"}'",
+        "response_sample": "{\"code\":200,\"msg\":\"success\",\"data\":\"https://tempfile.1f6c...\"}"
+      }
+    ],
+    "credit_balance": "Endpoint: GET https://api.kie.ai/api/v1/chat/credit — Auth: Bearer API key — Actual live response shape: {\\\"code\\\": 200, \\\"msg\\\": \\\"success\\\", \\\"data\\\": 10051.0} — data field is a float representing remaining credit count.",
+    "credits_to_usd": "1 credit = $0.005 USD (confirmed from kie.ai SSR i18n data: \\\"1 credit ≈ $0.005 USD\\\"). Equivalently, $1 USD = 200 credits. This rate is shown on the /pricing page in the \\\"Credits / Gen\\\" column tooltip.",
+    "pricing_table": "## Video Models\n\n| Model | Mode | Resolution | Credits | Unit | USD | Formula |\n|---|---|---|---|---|---|---|\n| bytedance/seedance-2 | t2v / i2v | 1080p, no video input | 102 | per second | $0.51/s | credits = 102 × output_seconds |\n| bytedance/seedance-2 | t2v / i2v | 1080p, with video input | 62 | per second | $0.31/s | credits = 62 × (input_seconds + output_seconds) |\n| bytedance/seedance-2 | t2v / i2v | 720p, no video input | 41 | per second | $0.205/s | credits = 41 × output_seconds |\n| bytedance/seedance-2 | t2v / i2v | 720p, with video input | 25 | per second | $0.125/s | credits = 25 × (input_seconds + output_seconds) |\n| bytedance/seedance-2 | t2v / i2v | 480p, no video input | 19 | per second | $0.095/s | credits = 19 × output_seconds |\n| bytedance/seedance-2 | t2v / i2v | 480p, with video input | 11.5 | per second | $0.057/s | credits = 11.5 × (input_seconds + output_seconds) |\n| bytedance/seedance-2 fast | t2v / i2v | 720p, no video input | 33 | per second | $0.165/s | credits = 33 × output_seconds |\n| bytedance/seedance-2 fast | t2v / i2v | 720p, with video input | 20 | per second | $0.10/s | credits = 20 × (input_seconds + output_seconds) |\n| bytedance/seedance-2 fast | t2v / i2v | 480p, no video input | 15.5 | per second | $0.0775/s | credits = 15.5 × output_seconds |\n| bytedance/seedance-2 fast | t2v / i2v | 480p, with video input | 9 | per second | $0.045/s | credits = 9 × (input_seconds + output_seconds) |\n| Kling 3.0 | t2v / i2v | 4K, with or without audio | 67 | per second | $0.335/s | credits = 67 × output_seconds |\n| Kling 3.0 | t2v / i2v | 1080P, with audio | 27 | per second | $0.135/s | credits = 27 × output_seconds |\n| Kling 3.0 | t2v / i2v | 1080P, without audio | 18 | per second | $0.09/s | credits = 18 × output_seconds |\n| Kling 3.0 | t2v / i2v | 720P, with audio | 20 | per second | $0.10/s | credits = 20 × output_seconds |\n| Kling 3.0 | t2v / i2v | 720P, without audio | 14 | per second | $0.07/s | credits = 14 × output_seconds |\n| kling 2.6 | t2v | without audio, 5s | 55 | per video | $0.275 | fixed per video |\n| kling 2.6 | t2v | without audio, 10s | 110 | per video | $0.55 | fixed per video |\n| kling 2.6 | t2v | with audio, 5s | 110 | per video | $0.55 | fixed per video |\n| kling 2.6 | t2v | with audio, 10s | 220 | per video | $1.1 | fixed per video |\n| kling 2.6 | i2v | without audio, 5s | 55 | per video | $0.275 | fixed per video |\n| kling 2.6 | i2v | without audio, 10s | 110 | per video | $0.55 | fixed per video |\n| kling 2.6 | i2v | with audio, 5s | 110 | per video | $0.55 | fixed per video |\n| kling 2.6 | i2v | with audio, 10s | 220 | per video | $1.1 | fixed per video |\n| wan 2.6 | t2v | 720p, 5s | 70 | per video | $0.35 | fixed per video |\n| wan 2.6 | t2v | 720p, 10s | 140 | per video | $0.70 | fixed per video |\n| wan 2.6 | t2v | 720p, 15s | 210 | per video | $1.05 | fixed per video |\n| wan 2.6 | t2v | 1080p, 5s | 104.5 | per video | $0.5225 | fixed per video |\n| wan 2.6 | t2v | 1080p, 10s | 209.5 | per video | $1.0475 | fixed per video |\n| wan 2.6 | t2v | 1080p, 15s | 315 | per video | $1.575 | fixed per video |\n| wan 2.6 | i2v | 720p, 5s | 70 | per video | $0.35 | fixed per video |\n| wan 2.6 | i2v | 720p, 10s | 140 | per video | $0.70 | fixed per video |\n| wan 2.6 | i2v | 720p, 15s | 210 | per video | $1.05 | fixed per video |\n| wan 2.6 | i2v | 1080p, 5s | 104.5 | per video | $0.5225 | fixed per video |\n| wan 2.6 | i2v | 1080p, 10s | 209.5 | per video | $1.0475 | fixed per video |\n| wan 2.6 | i2v | 1080p, 15s | 315 | per video | $1.575 | fixed per video |\n| hailuo 2.3 | i2v | Standard, 6s, 768p | 30 | per video | $0.15 | fixed per video |\n| hailuo 2.3 | i2v | Standard, 10s, 768p | 50 | per video | $0.25 | fixed per video |\n| hailuo 2.3 | i2v | Standard, 6s, 1080p | 50 | per video | $0.25 | fixed per video |\n| hailuo 2.3 | i2v | Pro, 6s, 768p | 45 | per video | $0.225 | fixed per video |\n| hailuo 2.3 | i2v | Pro, 6s, 1080p | 80 | per video | $0.40 | fixed per video |\n| hailuo 2.3 | i2v | Pro, 10s, 768p | 90 | per video | $0.45 | fixed per video |\n| Google veo 3.1 | t2v | Lite, 720p | 30 | per video | $0.15 | fixed per video |\n| Google veo 3.1 | t2v | Lite, 1080p | 35 | per video | $0.175 | fixed per video |\n| Google veo 3.1 | t2v | Lite, 4K | 150 | per video | $0.75 | fixed per video |\n| Google veo 3.1 | t2v | Fast, 720p | 60 | per video | $0.30 | fixed per video |\n| Google veo 3.1 | t2v | Fast, 1080p | 65 | per video | $0.325 | fixed per video |\n| Google veo 3.1 | t2v | Fast, 4K | 180 | per video | $0.90 | fixed per video |\n| Google veo 3.1 | t2v | Quality, 720p | 250 | per video | $1.25 | fixed per video |\n| Google veo 3.1 | t2v | Quality, 1080p | 255 | per video | $1.275 | fixed per video |\n| Google veo 3.1 | t2v | Quality, 4K | 380 | per video | $1.85 | fixed per video |\n| Google veo 3.1 | i2v | Lite, 720p | 30 | per video | $0.15 | fixed per video |\n| Google veo 3.1 | i2v | Lite, 1080p | 35 | per video | $0.175 | fixed per video |\n| Google veo 3.1 | i2v | Lite, 4K | 150 | per video | $0.75 | fixed per video |\n| Google veo 3.1 | i2v | Fast, 720p | 60 | per video | $0.30 | fixed per video |\n| Google veo 3.1 | i2v | Fast, 1080p | 65 | per video | $0.325 | fixed per video |\n| Google veo 3.1 | i2v | Fast, 4K | 180 | per video | $0.90 | fixed per video |\n| Google veo 3.1 | i2v | Quality, 720p | 250 | per video | $1.25 | fixed per video |\n| Google veo 3.1 | i2v | Quality, 1080p | 255 | per video | $1.275 | fixed per video |\n| Google veo 3.1 | i2v | Quality, 4K | 370 | per video | $1.85 | fixed per video |\n| grok-imagine video 1.5 | i2v | 480p | 14.5 | per second | $0.0725/s | credits = 14.5 × output_seconds |\n| grok-imagine video 1.5 | i2v | 720p | 25 | per second | $0.125/s | credits = 25 × output_seconds |\n\n**Seedance billing formula (from kie.ai i18n):**\n- No video input: Total Cost = Unit Price × Output Duration (seconds)\n- With video input: Total Cost = Unit Price × (Input Duration + Output Duration)\n\n## Image Models\n\n| Model | Mode | Resolution | Credits | Unit | USD |\n|---|---|---|---|---|---|\n| Google nano banana | t2i | standard | 4 | per image | $0.02 |\n| Google nano banana edit | i2i | standard | 4 | per image | $0.02 |\n| Google nano banana 2 | t2i | 1K | 8 | per image | $0.04 |\n| Google nano banana 2 | t2i | 2K | 12 | per image | $0.06 |\n| Google nano banana 2 | t2i | 4K | 18 | per image | $0.09 |\n| Google nano banana pro | t2i | 1K/2K | 18 | per image | $0.09 |\n| Google nano banana pro | t2i | 4K | 24 | per image | $0.12 |\n| seedream 4.5 | t2i | standard | 6.5 | per image | $0.0325 |\n| seedream 4.5 | i2i | standard | 6.5 | per image | $0.0325 |\n| seedream 5.0 Lite | t2i | standard | 5.5 | per image | $0.0275 |\n| seedream 5.0 Lite | i2i | standard | 5.5 | per image | $0.0275 |\n| Qwen z-image | t2i | standard | 0.8 | per image | $0.004 |\n| Black Forest Labs flux-2 pro | t2i | 1K | 5 | per image | $0.025 |\n| Black Forest Labs flux-2 pro | t2i | 2K | 7 | per image | $0.035 |\n| Black Forest Labs flux-2 pro | i2i | 1K | 5 | per image | $0.025 |\n| Black Forest Labs flux-2 pro | i2i | 2K | 7 | per image | $0.035 |\n| Black Forest Labs Flux 2 Flex | t2i | 1K | 14 | per image | $0.07 |\n| Black Forest Labs Flux 2 Flex | t2i | 2K | 24 | per image | $0.12 |\n| Black Forest Labs Flux 2 Flex | i2i | 1K | 14 | per image | $0.07 |\n| Black Forest Labs Flux 2 Flex | i2i | 2K | 24 | per image | $0.12 |",
+    "recommendation": "Use a hybrid strategy: bundle a pricing table + supplement with live API calls.\n\nThere is NO dedicated pre-flight cost-estimate endpoint. All guessed paths (/api/v1/credit/estimate, /api/v1/jobs/preCheck, etc.) return 404. The web playground's cost preview is client-side: it reads pricing from the model-pricing API once at load time and multiplies locally (unit_price × duration or unit_price × (input+output) for video-input models).\n\nThe right approach for the CLI:\n\n1. BUNDLE a static pricing table (JSON) that is periodically refreshed from POST https://api.kie.ai/client/v1/model-pricing/page (paginate with pageSize=100 across all interfaceTypes). This is an undocumented but verified endpoint that returns the canonical credit cost per model+resolution+duration SKU. The table can be committed to the CLI repo and refreshed on a schedule (e.g. daily CI job). This gives instant offline cost preview with zero latency and no extra API call on each generation.\n\n2. SUPPLEMENT with a live balance check at generation time: GET https://api.kie.ai/api/v1/chat/credit — compare balance against the bundled table lookup to detect insufficient credits before submitting. This is the only safe pre-flight check the public API offers.\n\n3. FORMULA for per-second video models (Seedance 2, Kling 3.0, Grok video, etc.): cost_credits = unit_price_per_second × output_duration_seconds (no input video) OR unit_price_per_second × (input_duration_seconds + output_duration_seconds) (with video input). For fixed-duration models (Kling 2.6, Wan 2.6, Hailuo 2.3, Veo 3.1): cost_credits = fixed_credit_value for the (duration, resolution) SKU from the table.\n\n4. CONVERSION: 1 credit = $0.005 USD (confirmed from kie.ai's own UI copy).\n\nDo NOT attempt to build cost estimation purely as a live API call — the endpoint does not exist. The model-pricing/page endpoint is suitable for a warm-cache refresh but not per-generation on-the-fly queries (it returns all SKUs, not a single job estimate)."
+  }
+}
