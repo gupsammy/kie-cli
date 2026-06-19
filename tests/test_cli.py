@@ -102,7 +102,8 @@ def test_schema_json_shape(capsys):
 # ── cmd_cost: JSON shape ──────────────────────────────────────────────────────
 
 def test_cost_json_shape(capsys, monkeypatch):
-    """kie cost seedance-2 --duration 8 --resolution 1080p --no-audio --json shapes correctly."""
+    """kie cost seedance-2 1080p 8s previews the dummy-ref price by default:
+    62×(2+8)=620, matching what generate auto-attaches."""
     args = _parse(["cost", "seedance-2", "--duration", "8", "--resolution", "1080p",
                    "--no-audio", "--json"])
     from kie_cli.api import Client
@@ -115,10 +116,24 @@ def test_cost_json_shape(capsys, monkeypatch):
     captured = capsys.readouterr()
     obj = json.loads(captured.out)
     assert obj["model"] == "bytedance/seedance-2"
+    assert obj["credits"] == pytest.approx(620.0)
+    assert "2s ref" in obj["formula"]
+    assert "sufficient" in obj
+
+
+def test_cost_no_dummy_ref_shows_full_price(capsys):
+    """--no-dummy-ref restores the un-optimized 1080p 8s price: 102×8=816."""
+    args = _parse(["cost", "seedance-2", "--duration", "8", "--resolution", "1080p",
+                   "--no-audio", "--no-dummy-ref", "--json"])
+    from kie_cli.api import Client
+    client = Client(api_key="test-key")
+
+    with patch.object(client, "request", return_value=1000.0):
+        cmd_cost(args, client)
+
+    obj = json.loads(capsys.readouterr().out)
     assert obj["credits"] == 816
     assert obj["usd"] == pytest.approx(4.08)
-    assert "sufficient" in obj
-    assert "formula" in obj
 
 
 def test_cost_json_unknown_sku_credits_none(capsys):

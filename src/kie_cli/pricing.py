@@ -97,7 +97,8 @@ def _credits(rec: dict | None) -> float | None:
 
 # ── Per-second estimators ─────────────────────────────────────────────────────
 
-def _est_seedance2(model_id: str, inp: dict, records: list[dict]) -> dict:
+def _est_seedance2(model_id: str, inp: dict, records: list[dict],
+                   extra_input_seconds: float = 0.0) -> dict:
     """seedance-2 and seedance-2-fast per-second billing."""
     is_fast = "fast" in model_id
     res = inp.get("resolution", "720p").lower()
@@ -126,10 +127,16 @@ def _est_seedance2(model_id: str, inp: dict, records: list[dict]) -> dict:
 
     if has_video_input:
         # credits = unit × (input_duration + output_duration)
-        # input_duration is unknown from output params alone
-        credits = unit * duration
-        note = "input duration unknown; using output duration only. Actual cost = unit × (input_s + output_s)"
-        formula = f"{unit} cr/s × {duration}s (output only)"
+        if extra_input_seconds:
+            # Known input seconds (e.g. the auto-attached 2s dummy ref).
+            credits = unit * (duration + extra_input_seconds)
+            note = None
+            formula = f"{unit} cr/s × ({extra_input_seconds:g}s ref + {duration}s out)"
+        else:
+            # User-supplied ref of unknown duration — output only, with caveat.
+            credits = unit * duration
+            note = "input duration unknown; using output duration only. Actual cost = unit × (input_s + output_s)"
+            formula = f"{unit} cr/s × {duration}s (output only)"
     else:
         credits = unit * duration
         note = None
@@ -498,8 +505,12 @@ def _est_topaz_video(inp: dict, records: list[dict]) -> dict:
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def estimate(model: "Model", inp: dict) -> dict:
+def estimate(model: "Model", inp: dict, extra_input_seconds: float = 0.0) -> dict:
     """Estimate credits for a generation.
+
+    extra_input_seconds: known reference-video input seconds to bill on top of
+        output duration (e.g. the auto-attached 2s dummy ref). Only affects the
+        per-second seedance-2 SKUs; ignored elsewhere.
 
     Returns:
         dict with keys: credits (float|None), usd (float|None), unit (float|None),
@@ -507,7 +518,7 @@ def estimate(model: "Model", inp: dict) -> dict:
         Never raises — on any failure returns credits=None with note.
     """
     try:
-        return _estimate_inner(model, inp)
+        return _estimate_inner(model, inp, extra_input_seconds)
     except Exception as exc:
         return {
             "credits": None,
@@ -519,13 +530,13 @@ def estimate(model: "Model", inp: dict) -> dict:
         }
 
 
-def _estimate_inner(model: "Model", inp: dict) -> dict:
+def _estimate_inner(model: "Model", inp: dict, extra_input_seconds: float = 0.0) -> dict:
     records = load_table()
     mid = model.id
 
     # ── Video: per-second ────────────────────────────────────────────────────
     if mid in ("bytedance/seedance-2", "bytedance/seedance-2-fast"):
-        return _est_seedance2(mid, inp, records)
+        return _est_seedance2(mid, inp, records, extra_input_seconds)
 
     if mid == "kling-3.0/video":
         return _est_kling3(inp, records)

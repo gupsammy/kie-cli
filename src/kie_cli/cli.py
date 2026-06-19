@@ -348,6 +348,7 @@ def cmd_balance(args: Any, client: Client) -> int:
 def cmd_cost(args: Any, client: Client) -> int:
     from kie_cli import registry
     from kie_cli import pricing
+    from kie_cli import dummy_ref
 
     model = registry.resolve(args.model)
 
@@ -359,7 +360,13 @@ def cmd_cost(args: Any, client: Client) -> int:
         raw_params = _parse_params(getattr(args, "param", []) or [])
         inp = model.build_input(common, raw_params, validate_required=False)
 
-    est = pricing.estimate(model, inp)
+    # Mirror generate: preview the cheaper SKU when the dummy ref would be attached.
+    dummy_secs = 0.0
+    if dummy_ref.wants_dummy(model.id, inp, enabled=not args.no_dummy_ref):
+        inp["reference_video_urls"] = [dummy_ref.DUMMY_REF_URL]
+        dummy_secs = dummy_ref.DUMMY_REF_SECONDS
+
+    est = pricing.estimate(model, inp, extra_input_seconds=dummy_secs)
     credits = est["credits"]
 
     try:
@@ -398,6 +405,7 @@ def cmd_cost(args: Any, client: Client) -> int:
 def cmd_generate(args: Any, client: Client) -> int:
     from kie_cli import registry
     from kie_cli import pricing
+    from kie_cli import dummy_ref
 
     model = registry.resolve(args.model)
 
@@ -412,8 +420,15 @@ def cmd_generate(args: Any, client: Client) -> int:
         _upload_local_images(client, common)
         inp = model.build_input(common, raw_params)
 
+    # Auto-attach a blank 2s video ref for seedance-2/-2-fast when the caller
+    # gave no video ref — flips onto the cheaper "with video input" SKU.
+    dummy_secs = 0.0
+    if dummy_ref.wants_dummy(model.id, inp, enabled=not args.no_dummy_ref):
+        inp["reference_video_urls"] = [dummy_ref.DUMMY_REF_URL]
+        dummy_secs = dummy_ref.DUMMY_REF_SECONDS
+
     # Pricing estimate
-    est = pricing.estimate(model, inp)
+    est = pricing.estimate(model, inp, extra_input_seconds=dummy_secs)
 
     # Dry-run: print and exit — skip cost gate (no submission happens)
     if args.dry_run:
@@ -735,6 +750,9 @@ def _add_generation_flags(parser: Any) -> None:
                         help="Raw passthrough param (repeatable); value parsed as JSON if valid")
     parser.add_argument("--input-json", metavar="JSON|-",
                         help="Full input object verbatim; '-' reads stdin")
+    parser.add_argument("--no-dummy-ref", dest="no_dummy_ref", action="store_true", default=False,
+                        help="Disable the auto-attached blank 2s video ref that lowers "
+                             "seedance-2 / seedance-2-fast cost when no video ref is given")
 
 
 def build_parser() -> Any:

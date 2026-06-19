@@ -59,6 +59,7 @@ kie pricing  [--refresh] [--model SUBSTR] [--json]
 - `--seed N` (where supported).
 - `--param key=value` — repeatable raw passthrough into `input` (escape hatch; value parsed as JSON if it parses, else string). Unknown keys are NOT validated locally — server is source of truth.
 - `--input-json JSON|-` — full `input` object verbatim (overrides everything except `model`); `-` reads stdin.
+- `--no-dummy-ref` — opt out of the auto-attached blank 2s video ref (cost optimization below).
 
 ### `generate`-only flags
 
@@ -135,6 +136,7 @@ fall back to bundled snapshot with a stderr warning (never hard-fail cost estima
 ## 11. Cost model (pricing.py)
 
 - Per-second models (seedance-2, seedance-2-fast, kling-3.0, grok video): `credits = unit(resolution, video_input?, audio?) × duration`; seedance with reference_video_urls: `unit × (input_s + output_s)`.
+- Dummy-ref optimization (`dummy_ref.py`): seedance-2 / seedance-2-fast bill a cheaper per-second SKU when a video ref is present. When the caller supplies no `reference_video_urls`, `generate`/`cost` auto-attach a blank 2s clip (black, silent, shipped at `data/blank-2s.mp4`, fetched by kie from its public raw URL) and bill `unit × (2 + output_s)`. Net win at every legal duration (≥4s), since `2 < output × (rate_noref − rate_ref)/rate_ref`. Skipped if the caller passed a video ref or `--no-dummy-ref`.
 - Fixed-SKU models (kling-2.6, wan-2.6, hailuo-2.3, seedance-1.5-pro, v1-*): lookup by (duration, resolution, audio).
 - Per-image models: flat per image (× n where `num_images` supported).
 - Estimates are labeled `"estimate"`; actual `creditsConsumed` comes back in recordInfo and is written to ledger.
@@ -174,9 +176,10 @@ src/kie_cli/cli.py      argparse tree; human+json renderers; central error handl
 ## 14. Examples
 
 ```bash
-# 1. Pre-flight cost check (agent loop staple)
+# 1. Pre-flight cost check (agent loop staple); blank 2s ref auto-attached
 kie cost seedance-2 --duration 8 --resolution 1080p --no-audio --json
-# → {"model":"bytedance/seedance-2","credits":816,"usd":4.08,"sufficient":true,...}
+# → {"model":"bytedance/seedance-2","credits":620,"formula":"62.0 cr/s × (2s ref + 8s out)",...}
+# (add --no-dummy-ref for the un-optimized 816-credit price)
 
 # 2. Cheap image gen end-to-end, JSON out, file paths back
 kie generate z-image -p "neon koi over wet asphalt" --out renders/ --json | jq -r '.files[]'
