@@ -1,15 +1,29 @@
-"""Auto-attach a blank 2s video reference to seedance-2 generations that have
-no video reference of their own.
+"""Attach a blank 2s video reference to seedance-2 generations that have no video
+reference of their own. ON by default; auto-skipped when the caller already supplies
+a real video ref; opt OUT manually with --no-dummy-ref.
 
-Why: seedance-2 / seedance-2-fast bill per second on two distinct SKUs — a
-pricier "no video input" rate and a cheaper "with video input" rate charged on
-(input_s + output_s). Attaching a throwaway 2s clip flips a text-to-video or
-image-to-video request onto the cheaper SKU; the 2 extra input-seconds cost far
-less than the rate discount for any output >= the 4s minimum. See pricing.py.
+Default-on for cost: most generations have no video ref and bill cheaper with one
+attached (rationale below), so the saving is the common case and the dummy is
+attached automatically. When a real video ref is present (e.g. a continuity/extend
+clip) the dummy is skipped — nothing to do, and --no-dummy-ref is unnecessary.
 
-The blank clip (black, silent, 2s, ~3KB) ships as package data at
-data/blank-2s.mp4 and is also served from the public repo, so kie fetches it
-directly by URL — no upload, no cache, no per-machine state.
+Does the dummy hurt verbatim dialogue? No. An earlier scare blamed dropped dialogue
+on the dummy's r2v mode, but the regression was traced to PROMPT LENGTH, not the ref:
+prompts over ~3000 chars paraphrase; lean prompts render the lines verbatim even with
+the dummy attached (controlled test — a ~3979-char prompt paraphrased; a ~2400-char
+prompt with the same video ref rendered verbatim). Keep prompts ≤~3000 chars and the
+dummy is free. --no-dummy-ref is a manual escape hatch: reach for it only if a
+dialogue regression reappears on an already-lean prompt.
+
+Cost rationale (when you do opt in): seedance-2 / seedance-2-fast bill per second
+on two SKUs — a pricier "no video input" rate and a cheaper "with video input" rate
+charged on (input_s + output_s). A throwaway 2s clip flips onto the cheaper SKU; the
+2 extra input-seconds cost less than the rate discount for output >= the 4s minimum.
+
+The blank clip (black, silent, 2s, 1280x720) ships as package data at
+data/blank-2s.mp4 and is served from the public repo, so kie fetches it by URL — no
+upload, no per-machine state. Dimensions are load-bearing: the r2v input floor is
+409600 px and 1.8s, so the clip must be >=640x640-equivalent and >=2s.
 """
 from __future__ import annotations
 

@@ -70,6 +70,29 @@ def _err_json(code: str, message: str, hint: str | None) -> None:
     print(json.dumps(obj, ensure_ascii=False), file=sys.stderr)
 
 
+def _probe_video_seconds(urls: list) -> float | None:
+    """Sum the durations (s) of reference video URLs via ffprobe, so a with-video-input
+    estimate can bill (input_s + output_s) correctly. Returns None if ffprobe is missing
+    or any probe fails — callers then fall back to the output-only estimate."""
+    import shutil
+    import subprocess
+
+    if not urls or not shutil.which("ffprobe"):
+        return None
+    total = 0.0
+    for u in urls:
+        try:
+            out = subprocess.run(
+                ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                 "-of", "default=noprint_wrappers=1:nokey=1", u],
+                capture_output=True, text=True, timeout=30,
+            )
+            total += float(out.stdout.strip())
+        except (ValueError, OSError, subprocess.SubprocessError):
+            return None
+    return round(total, 1) or None
+
+
 # ── Central error handler ────────────────────────────────────────────────────
 
 def _handle_error(exc: KieError, use_json: bool) -> int:
@@ -362,9 +385,15 @@ def cmd_cost(args: Any, client: Client) -> int:
 
     # Mirror generate: preview the cheaper SKU when the dummy ref would be attached.
     dummy_secs = 0.0
-    if dummy_ref.wants_dummy(model.id, inp, enabled=not args.no_dummy_ref):
+    if dummy_ref.wants_dummy(model.id, inp, enabled=args.dummy_ref):
         inp["reference_video_urls"] = [dummy_ref.DUMMY_REF_URL]
         dummy_secs = dummy_ref.DUMMY_REF_SECONDS
+    elif inp.get("reference_video_urls"):
+        # Explicit user video ref(s): probe their duration so the estimate bills
+        # (input_s + output_s), not output only. Falls back silently if unprobeable.
+        probed = _probe_video_seconds(inp["reference_video_urls"])
+        if probed:
+            dummy_secs = probed
 
     est = pricing.estimate(model, inp, extra_input_seconds=dummy_secs)
     credits = est["credits"]
@@ -423,9 +452,15 @@ def cmd_generate(args: Any, client: Client) -> int:
     # Auto-attach a blank 2s video ref for seedance-2/-2-fast when the caller
     # gave no video ref — flips onto the cheaper "with video input" SKU.
     dummy_secs = 0.0
-    if dummy_ref.wants_dummy(model.id, inp, enabled=not args.no_dummy_ref):
+    if dummy_ref.wants_dummy(model.id, inp, enabled=args.dummy_ref):
         inp["reference_video_urls"] = [dummy_ref.DUMMY_REF_URL]
         dummy_secs = dummy_ref.DUMMY_REF_SECONDS
+    elif inp.get("reference_video_urls"):
+        # Explicit user video ref(s): probe their duration so the estimate bills
+        # (input_s + output_s), not output only. Falls back silently if unprobeable.
+        probed = _probe_video_seconds(inp["reference_video_urls"])
+        if probed:
+            dummy_secs = probed
 
     # Pricing estimate
     est = pricing.estimate(model, inp, extra_input_seconds=dummy_secs)
@@ -586,6 +621,57 @@ def cmd_status(args: Any, client: Client) -> int:
             f"taskId={task_id}  state={state}  credits_consumed={credits_consumed}",
             quiet=args.quiet,
         )
+    return 0
+
+
+# ── Subcommand: logs ──────────────────────────────────────────────────────────
+
+def cmd_logs(args: Any, client: Client) -> int:
+    """Surface the exact input a task was submitted with — the prompt and params
+    that actually reached the model.
+
+    The task record stores the original request under `param`, whose `input` is a
+    JSON string of the submitted payload. This is the same data the web dashboard's
+    logs page shows; exposing it lets you verify a prompt was transmitted intact
+    (e.g. confirm no truncation) rather than guessing from the result.
+    """
+    record = client.get_task(args.task_id)
+
+    # _normalize_record parses `param` into a dict {"input": "<json string>", "model": …};
+    # the nested `input` is still a JSON string — parse it to the submitted payload.
+    submitted: dict = {}
+    param = record.get("param")
+    if isinstance(param, dict):
+        inp = param.get("input")
+        if isinstance(inp, str) and inp:
+            try:
+                submitted = json.loads(inp)
+            except json.JSONDecodeError:
+                submitted = {}
+        elif isinstance(inp, dict):
+            submitted = inp
+
+    out = {
+        "taskId": args.task_id,
+        "model": record.get("model"),
+        "state": record.get("state"),
+        "creditsConsumed": record.get("creditsConsumed"),
+        "failMsg": record.get("failMsg") or None,
+        "input": submitted,
+    }
+
+    if args.json:
+        _json_out(out)
+    else:
+        prompt = submitted.get("prompt", "")
+        meta = {k: v for k, v in submitted.items() if k != "prompt"}
+        _human(f"taskId={args.task_id}  state={out['state']}  model={out['model']}", quiet=args.quiet)
+        if out["failMsg"]:
+            _human(f"failMsg: {out['failMsg']}", quiet=args.quiet)
+        if meta:
+            _human(f"input params: {json.dumps(meta, ensure_ascii=False)}", quiet=args.quiet)
+        if prompt:
+            _human(f"prompt ({len(prompt)} chars):\n{prompt}", quiet=args.quiet)
     return 0
 
 
@@ -750,9 +836,15 @@ def _add_generation_flags(parser: Any) -> None:
                         help="Raw passthrough param (repeatable); value parsed as JSON if valid")
     parser.add_argument("--input-json", metavar="JSON|-",
                         help="Full input object verbatim; '-' reads stdin")
-    parser.add_argument("--no-dummy-ref", dest="no_dummy_ref", action="store_true", default=False,
-                        help="Disable the auto-attached blank 2s video ref that lowers "
-                             "seedance-2 / seedance-2-fast cost when no video ref is given")
+    parser.add_argument("--dummy-ref", dest="dummy_ref", action="store_true", default=True,
+                        help="Attach the cost-saving blank 2s video ref on seedance-2 / -fast when no "
+                             "video ref is present (cheaper with-video SKU). ON by default; auto-skipped "
+                             "when a real video ref is present.")
+    parser.add_argument("--no-dummy-ref", dest="dummy_ref", action="store_false",
+                        help="Opt OUT of the dummy ref (manual escape hatch). The dummy does NOT harm "
+                             "verbatim dialogue — adherence is governed by prompt length (keep <=~3000 "
+                             "chars). Reach for this only if a dialogue regression reappears on an "
+                             "already-lean prompt.")
 
 
 def build_parser() -> Any:
@@ -821,6 +913,11 @@ def build_parser() -> Any:
                           help="Block until terminal state")
     p_status.add_argument("--timeout", type=int, default=900, metavar="SECS")
 
+    # logs
+    p_logs = sub.add_parser("logs", help="Show a task's submitted input (prompt + params)")
+    _add_global_flags(p_logs)
+    p_logs.add_argument("task_id", metavar="TASK_ID")
+
     # download
     p_dl = sub.add_parser("download", help="Download results of a task")
     _add_global_flags(p_dl)
@@ -862,6 +959,7 @@ SUBCOMMAND_MAP = {
     "cost": cmd_cost,
     "generate": cmd_generate,
     "status": cmd_status,
+    "logs": cmd_logs,
     "download": cmd_download,
     "tasks": cmd_tasks,
     "upload": cmd_upload,
