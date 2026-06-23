@@ -2,7 +2,7 @@
 
 SPEC §11 / §13.
 
-Per-second models: seedance-2, seedance-2-fast, kling-3.0, grok video.
+Per-second models: seedance-2, seedance-2-fast, seedance-2-mini, kling-3.0, grok video.
 Fixed-SKU models:  kling-2.6, wan-2.6, hailuo-2.3, seedance-1.5-pro, v1-*.
 Per-image models:  all image models.
 
@@ -99,19 +99,29 @@ def _credits(rec: dict | None) -> float | None:
 
 def _est_seedance2(model_id: str, inp: dict, records: list[dict],
                    extra_input_seconds: float = 0.0) -> dict:
-    """seedance-2 and seedance-2-fast per-second billing."""
+    """seedance-2, seedance-2-fast and seedance-2-mini per-second billing."""
     is_fast = "fast" in model_id
+    is_mini = "mini" in model_id
     res = inp.get("resolution", "720p").lower()
     has_video_input = bool(inp.get("reference_video_urls"))
     duration = int(inp.get("duration", 5))
 
-    # Build matcher substrings
-    video_tag = "with video input" if has_video_input else "no video input"
-    if is_fast:
+    # Build matcher substrings. mini records use a distinct description format:
+    # "bytedance/seedance-2-mini, 720P no video" — hyphenated, capital P (folded by
+    # the case-insensitive matcher), and "no video"/"with video" WITHOUT the trailing
+    # "input" that base/fast carry. That missing suffix also keeps the base lookup
+    # below from accidentally matching a mini record.
+    if is_mini:
+        video_tag = "with video" if has_video_input else "no video"
+        rec = _find(records, "bytedance/seedance-2-mini", res, video_tag)
+        prefix = "bytedance/seedance-2-mini"
+    elif is_fast:
+        video_tag = "with video input" if has_video_input else "no video input"
         rec = _find(records, "bytedance/seedance-2 fast", res, video_tag)
         prefix = "bytedance/seedance-2 fast"
     else:
         # Exclude "fast" entries so "bytedance/seedance-2 fast" doesn't match
+        video_tag = "with video input" if has_video_input else "no video input"
         rec = _find(records, "bytedance/seedance-2", res, video_tag, exclude="fast")
         prefix = "bytedance/seedance-2"
     unit = _credits(rec)
@@ -535,7 +545,8 @@ def _estimate_inner(model: "Model", inp: dict, extra_input_seconds: float = 0.0)
     mid = model.id
 
     # ── Video: per-second ────────────────────────────────────────────────────
-    if mid in ("bytedance/seedance-2", "bytedance/seedance-2-fast"):
+    if mid in ("bytedance/seedance-2", "bytedance/seedance-2-fast",
+               "bytedance/seedance-2-mini"):
         return _est_seedance2(mid, inp, records, extra_input_seconds)
 
     if mid == "kling-3.0/video":

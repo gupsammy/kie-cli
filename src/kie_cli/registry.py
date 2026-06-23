@@ -260,6 +260,43 @@ _sd2f = Model(
 MODELS[_sd2f.id] = _sd2f
 
 # ──────────────────────────────────────────────────────────────────────────────
+# bytedance/seedance-2-mini
+# Same surface as seedance-2-fast (480p/720p ceiling) plus web_search.
+# ──────────────────────────────────────────────────────────────────────────────
+_sd2m = Model(
+    id="bytedance/seedance-2-mini",
+    aliases=["seedance-2-mini"],
+    kind="video",
+    modes=["t2v", "i2v"],
+    params=[
+        _p("prompt", "string", desc="3-20000 chars"),
+        _p("first_frame_url", "string", desc="URL; mutex with reference_image_urls"),
+        _p("last_frame_url", "string", desc="Use with first_frame_url"),
+        _p("reference_image_urls", "array", desc="Max 9; mutex with first/last frame"),
+        _p("reference_video_urls", "array", desc="Max 3 videos; affects billing"),
+        _p("reference_audio_urls", "array", desc="Max 3 audio files"),
+        _p("generate_audio", "boolean", default=True),
+        _p("resolution", "string", default="720p", enum=["480p", "720p"]),
+        _p("aspect_ratio", "string", default="16:9",
+           enum=["1:1", "4:3", "3:4", "16:9", "9:16", "21:9", "adaptive"]),
+        _p("duration", "integer", default=5, desc="4-15 seconds"),
+        _p("web_search", "boolean", desc="Online search; text-to-video only"),
+        _p("nsfw_checker", "boolean", default=False),
+    ],
+    flag_map=FlagMap(
+        last_frame="last_frame_url",
+        audio="generate_audio",
+    ),
+    image_field_style="first_frame_url",
+    mutex_groups=[
+        frozenset({"first_frame_url", "reference_image_urls"}),
+        frozenset({"last_frame_url", "reference_image_urls"}),
+    ],
+    pricing_key="seedance-2-mini",
+)
+MODELS[_sd2m.id] = _sd2m
+
+# ──────────────────────────────────────────────────────────────────────────────
 # bytedance/seedance-1.5-pro
 # ──────────────────────────────────────────────────────────────────────────────
 _sd15 = Model(

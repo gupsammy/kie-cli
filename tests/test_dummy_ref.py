@@ -10,7 +10,9 @@ from kie_cli.registry import resolve
 
 # ── Eligibility / decision logic ──────────────────────────────────────────────
 
-@pytest.mark.parametrize("model_id", ["bytedance/seedance-2", "bytedance/seedance-2-fast"])
+@pytest.mark.parametrize("model_id", [
+    "bytedance/seedance-2", "bytedance/seedance-2-fast", "bytedance/seedance-2-mini",
+])
 def test_wants_dummy_eligible_no_ref(model_id):
     assert dummy_ref.wants_dummy(model_id, {}, enabled=True) is True
 
@@ -54,6 +56,15 @@ def test_dummy_ref_win_at_minimum_4s_floor():
     with_dummy = _est_with_dummy("seedance-2", {"resolution": "480p", "duration": 4})
     no_ref = pricing.estimate(resolve("seedance-2"), {"resolution": "480p", "duration": 4})
     assert with_dummy["credits"] == pytest.approx(69.0)
+    assert with_dummy["credits"] < no_ref["credits"]
+
+
+def test_dummy_ref_cheaper_for_mini_480p_4s():
+    """mini bills on its own SKU format: dummy = 6×(2+4)=36 < no-ref 9.5×4=38."""
+    with_dummy = _est_with_dummy("seedance-2-mini", {"resolution": "480p", "duration": 4})
+    no_ref = pricing.estimate(resolve("seedance-2-mini"), {"resolution": "480p", "duration": 4})
+    assert with_dummy["credits"] == pytest.approx(36.0)
+    assert no_ref["credits"] == pytest.approx(38.0)
     assert with_dummy["credits"] < no_ref["credits"]
 
 

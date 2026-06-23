@@ -419,11 +419,19 @@ def cmd_cost(args: Any, client: Client) -> int:
     if args.json:
         _json_out(result)
     else:
+        # credits/usd are None when no pricing record matched — render gracefully
+        # instead of crashing on the float format spec.
+        if credits is None:
+            estimate_line = "Estimate: unknown (no pricing record matched)"
+        else:
+            estimate_line = f"Estimate: {credits} credits (${est['usd']:.4f} USD)"
+        note = est.get("note")
         _human(
             f"Model: {model.id}\n"
-            f"Estimate: {credits} credits (${est['usd']:.4f} USD)\n"
+            f"{estimate_line}\n"
             f"Formula: {est.get('formula', 'n/a')}\n"
-            f"Balance: {balance} credits  sufficient={sufficient}",
+            + (f"Note: {note}\n" if note else "")
+            + f"Balance: {balance} credits  sufficient={sufficient}",
             quiet=args.quiet,
         )
     return 0
@@ -449,8 +457,8 @@ def cmd_generate(args: Any, client: Client) -> int:
         _upload_local_images(client, common)
         inp = model.build_input(common, raw_params)
 
-    # Auto-attach a blank 2s video ref for seedance-2/-2-fast when the caller
-    # gave no video ref — flips onto the cheaper "with video input" SKU.
+    # Auto-attach a blank 2s video ref for seedance-2/-2-fast/-2-mini when the
+    # caller gave no video ref — flips onto the cheaper "with video input" SKU.
     dummy_secs = 0.0
     if dummy_ref.wants_dummy(model.id, inp, enabled=args.dummy_ref):
         inp["reference_video_urls"] = [dummy_ref.DUMMY_REF_URL]
@@ -837,7 +845,7 @@ def _add_generation_flags(parser: Any) -> None:
     parser.add_argument("--input-json", metavar="JSON|-",
                         help="Full input object verbatim; '-' reads stdin")
     parser.add_argument("--dummy-ref", dest="dummy_ref", action="store_true", default=True,
-                        help="Attach the cost-saving blank 2s video ref on seedance-2 / -fast when no "
+                        help="Attach the cost-saving blank 2s video ref on seedance-2 / -fast / -mini when no "
                              "video ref is present (cheaper with-video SKU). ON by default; auto-skipped "
                              "when a real video ref is present.")
     parser.add_argument("--no-dummy-ref", dest="dummy_ref", action="store_false",

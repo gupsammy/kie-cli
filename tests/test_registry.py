@@ -19,6 +19,28 @@ def test_resolve_alias():
     assert m.id == "bytedance/seedance-2"
 
 
+def test_resolve_seedance2_mini_alias():
+    m = resolve("seedance-2-mini")
+    assert m.id == "bytedance/seedance-2-mini"
+    # mini caps at 480p/720p like fast; no 1080p
+    res = next(p for p in m.params if p.name == "resolution")
+    assert res.enum == ["480p", "720p"]
+    # mini adds web_search over fast
+    assert any(p.name == "web_search" for p in m.params)
+
+
+def test_seedance2_mini_mutex_first_frame_and_reference_images_exit7():
+    """mini inherits the seedance-2 frame/reference mutex."""
+    model = resolve("seedance-2-mini")
+    with pytest.raises(KieError) as exc_info:
+        model.build_input(
+            {"image": ["https://ex.com/frame.png"]},
+            {"reference_image_urls": ["https://ex.com/ref.png"]},
+        )
+    assert exc_info.value.exit_code == 7
+    assert exc_info.value.code == "conflicting_inputs"
+
+
 def test_resolve_kling26_alias_routes_to_t2v():
     """SPEC integrator note: kling-2.6 alias → t2v variant."""
     m = resolve("kling-2.6")

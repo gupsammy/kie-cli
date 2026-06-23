@@ -150,6 +150,22 @@ def test_cost_json_unknown_sku_credits_none(capsys):
     assert obj["credits"] is None
 
 
+def test_cost_human_unknown_sku_no_crash(capsys):
+    """Human (non-JSON) output for an unknown SKU must not crash on the float
+    format spec — credits/usd are None. Regression for the NoneType.__format__ bug."""
+    args = _parse(["cost", "seedance-1.5-pro", "--duration", "8"])
+    from kie_cli.api import Client
+    client = Client(api_key="test-key")
+
+    with patch.object(client, "request", return_value=1000.0):
+        rc = cmd_cost(args, client)
+
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "Estimate: unknown" in out
+    assert "$" not in out  # no malformed USD line
+
+
 # ── dry-run: never POSTs ──────────────────────────────────────────────────────
 
 def test_dry_run_makes_no_post(monkeypatch, capsys):

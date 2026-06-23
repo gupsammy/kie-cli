@@ -33,6 +33,22 @@ def test_seedance2_fast_720p_5s():
     assert est["source"] == "estimate"
 
 
+def test_seedance2_mini_720p_5s_no_video():
+    """mini 720p 5s no video = 20.5 cr/s × 5 = 102.5 credits. Exercises the mini
+    description format ('720P', 'no video' without the 'input' suffix)."""
+    est = _est("seedance-2-mini", {"resolution": "720p", "duration": 5})
+    assert est["credits"] == pytest.approx(102.5)
+    assert est["unit"] == pytest.approx(20.5)
+    assert est["source"] == "estimate"
+
+
+def test_seedance2_mini_does_not_match_base_sku():
+    """The base seedance-2 lookup must not pick up a mini record (the 'input'
+    suffix on base/fast tags is what discriminates them)."""
+    base = _est("seedance-2", {"resolution": "720p", "duration": 5})
+    assert base["unit"] == pytest.approx(41.0)  # base 720p no-input rate, not mini's 20.5
+
+
 def test_z_image_golden():
     """SPEC §15: z-image = 0.8 credits."""
     est = _est("z-image", {})
