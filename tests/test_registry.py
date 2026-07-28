@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 
 from kie_cli.api import KieError
-from kie_cli.registry import MODELS, resolve
+from kie_cli.registry import resolve
 
 
 # ── resolve() ────────────────────────────────────────────────────────────────
@@ -209,3 +209,30 @@ def test_build_input_skip_required_validation():
     result = model.build_input({"prompt": "test"}, {}, validate_required=False)
     assert result["prompt"] == "test"
     assert "image_url" not in result
+
+
+# ── seedream 5 pro: one CLI model, two upstream endpoints ────────────────────
+
+def test_seedream5pro_alias_and_modes():
+    model = resolve("seedream-5-pro")
+    assert model.id == "seedream/5-pro-text-to-image"
+    assert resolve("seedream/5-pro-image-to-image") is model
+    assert model.modes == ["t2i", "i2i"]
+
+
+def test_seedream5pro_effective_id_routes_on_images():
+    model = resolve("seedream-5-pro")
+    t2i_inp = model.build_input({"prompt": "a cat"}, {})
+    assert model.effective_id(t2i_inp) == "seedream/5-pro-text-to-image"
+    i2i_inp = model.build_input(
+        {"prompt": "a cat", "image": ["https://ex.com/a.png", "https://ex.com/b.png"]}, {})
+    assert i2i_inp["image_urls"] == ["https://ex.com/a.png", "https://ex.com/b.png"]
+    assert model.effective_id(i2i_inp) == "seedream/5-pro-image-to-image"
+
+
+def test_seedream5pro_defaults_applied():
+    model = resolve("seedream-5-pro")
+    inp = model.build_input({"prompt": "a cat"}, {})
+    assert inp["aspect_ratio"] == "1:1"
+    assert inp["quality"] == "basic"
+    assert inp["output_format"] == "png"

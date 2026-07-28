@@ -57,7 +57,16 @@ class Model:
     image_field_style: str = "none"
     # mutual exclusion groups: list of sets of input field names
     mutex_groups: list[frozenset] = field(default_factory=list)
+    # upstream model id to use instead of `id` when input images are present
+    # (for families that split t2i/i2i into separate endpoints)
+    i2i_variant_id: str | None = None
     pricing_key: str = ""
+
+    def effective_id(self, inp: dict) -> str:
+        """Upstream model id for this input."""
+        if self.i2i_variant_id and inp.get("image_urls"):
+            return self.i2i_variant_id
+        return self.id
 
     def build_input(self, common: dict, raw_params: dict, validate_required: bool = True) -> dict:
         """Map common CLI flags + raw passthrough → final input dict.
@@ -798,6 +807,34 @@ _sd5l = Model(
     pricing_key="seedream-5-lite",
 )
 MODELS[_sd5l.id] = _sd5l
+
+# ──────────────────────────────────────────────────────────────────────────────
+# seedream/5-pro  (one CLI model, two upstream endpoints)
+# Upstream splits t2i and i2i into separate model ids with identical params;
+# effective_id() routes to the i2i endpoint whenever input images are given.
+# ──────────────────────────────────────────────────────────────────────────────
+_sd5p = Model(
+    id="seedream/5-pro-text-to-image",
+    aliases=["seedream-5-pro", "seedream/5-pro-image-to-image"],
+    kind="image",
+    modes=["t2i", "i2i"],
+    params=[
+        _p("prompt", "string", required=True, desc="3-5000 chars"),
+        _p("image_urls", "array",
+           desc="Max 10; jpeg/png/webp, 10MB each; first input image free, 0.5 cr each after"),
+        _p("aspect_ratio", "string", required=True, default="1:1",
+           enum=["1:1", "4:3", "3:4", "16:9", "9:16", "2:3", "3:2", "21:9"]),
+        _p("quality", "string", required=True, default="basic", enum=["basic", "high"],
+           desc="basic=1K, high=2K"),
+        _p("output_format", "string", default="png", enum=["png", "jpeg"]),
+        _p("nsfw_checker", "boolean", default=False),
+    ],
+    flag_map=FlagMap(duration=None, resolution=None, audio=None),
+    image_field_style="image_urls",
+    i2i_variant_id="seedream/5-pro-image-to-image",
+    pricing_key="seedream-5-pro",
+)
+MODELS[_sd5p.id] = _sd5p
 
 # ──────────────────────────────────────────────────────────────────────────────
 # z-image

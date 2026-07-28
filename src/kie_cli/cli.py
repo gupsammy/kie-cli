@@ -397,6 +397,7 @@ def cmd_cost(args: Any, client: Client) -> int:
 
     est = pricing.estimate(model, inp, extra_input_seconds=dummy_secs)
     credits = est["credits"]
+    model_id = model.effective_id(inp)
 
     try:
         balance = client.credit()
@@ -406,7 +407,7 @@ def cmd_cost(args: Any, client: Client) -> int:
         sufficient = None
 
     result = {
-        "model": model.id,
+        "model": model_id,
         "credits": credits,
         "usd": est["usd"],
         "unit": est.get("unit"),
@@ -427,7 +428,7 @@ def cmd_cost(args: Any, client: Client) -> int:
             estimate_line = f"Estimate: {credits} credits (${est['usd']:.4f} USD)"
         note = est.get("note")
         _human(
-            f"Model: {model.id}\n"
+            f"Model: {model_id}\n"
             f"{estimate_line}\n"
             f"Formula: {est.get('formula', 'n/a')}\n"
             + (f"Note: {note}\n" if note else "")
@@ -472,13 +473,15 @@ def cmd_generate(args: Any, client: Client) -> int:
 
     # Pricing estimate
     est = pricing.estimate(model, inp, extra_input_seconds=dummy_secs)
+    # Some families (seedream 5 pro) split t2i/i2i into separate upstream ids
+    model_id = model.effective_id(inp)
 
     # Dry-run: print and exit — skip cost gate (no submission happens)
     if args.dry_run:
-        request_body: dict = {"model": model.id, "input": inp}
+        request_body: dict = {"model": model_id, "input": inp}
         if args.callback:
             request_body["callBackUrl"] = args.callback
-        result = {"model": model.id, "request": request_body, "estimate": est}
+        result = {"model": model_id, "request": request_body, "estimate": est}
         if args.json:
             _json_out(result)
         else:
@@ -486,17 +489,17 @@ def cmd_generate(args: Any, client: Client) -> int:
         return 0
 
     # Cost gate — checked AFTER dry-run (dry-run skips gate; gate only guards actual submission)
-    _cost_gate(est, args.yes, args.max_credits, args.json, model.id, args)
+    _cost_gate(est, args.yes, args.max_credits, args.json, model_id, args)
 
     # Submit task
     created_at = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
     t_start = time.monotonic()
-    task_id = client.create_task(model.id, inp, callback=getattr(args, "callback", None))
+    task_id = client.create_task(model_id, inp, callback=getattr(args, "callback", None))
 
     # Ledger: append pending row
     ledger.append({
         "taskId": task_id,
-        "model": model.id,
+        "model": model_id,
         "state": "waiting",
         "est_credits": est["credits"],
         "created_at": created_at,
@@ -512,7 +515,7 @@ def cmd_generate(args: Any, client: Client) -> int:
 
     if args.no_wait:
         result = _compound_result(
-            task_id, model.id, "waiting", est["credits"],
+            task_id, model_id, "waiting", est["credits"],
             None, [], created_at, None
         )
         if args.json:
@@ -564,7 +567,7 @@ def cmd_generate(args: Any, client: Client) -> int:
                 _human(f, quiet=args.quiet)
 
     compound = _compound_result(
-        task_id, model.id, state, est["credits"],
+        task_id, model_id, state, est["credits"],
         record, files, created_at, elapsed_s
     )
     if args.json:

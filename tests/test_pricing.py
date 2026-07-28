@@ -4,7 +4,7 @@ from __future__ import annotations
 import pytest
 
 from kie_cli import pricing
-from kie_cli.registry import resolve, MODELS
+from kie_cli.registry import resolve
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -118,3 +118,27 @@ def test_estimate_never_raises_on_exception():
 
 def test_credit_usd_constant():
     assert pricing.CREDIT_USD == 0.005
+
+
+# ── seedream 5 pro (records from live table; no hardcoded rates) ─────────────
+
+def test_seedream5pro_t2i_basic_and_high():
+    est = _est("seedream-5-pro", {"prompt": "x", "quality": "basic"})
+    assert est["credits"] == pytest.approx(7.0)
+    assert est["usd"] == pytest.approx(0.035)
+    est_hi = _est("seedream-5-pro", {"prompt": "x", "quality": "high"})
+    assert est_hi["credits"] == pytest.approx(14.0)
+
+
+def test_seedream5pro_i2i_first_input_image_free():
+    est = _est("seedream-5-pro", {"prompt": "x", "quality": "basic",
+                                  "image_urls": ["u1"]})
+    assert est["credits"] == pytest.approx(7.0)  # i2i base, no surcharge
+
+
+def test_seedream5pro_i2i_extra_input_image_surcharge():
+    est = _est("seedream-5-pro", {"prompt": "x", "quality": "high",
+                                  "image_urls": ["u1", "u2", "u3"]})
+    # 14 (2K) + 0.5 × 2 extra input images
+    assert est["credits"] == pytest.approx(15.0)
+    assert "first free" in est["formula"]

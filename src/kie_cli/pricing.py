@@ -421,6 +421,52 @@ def _est_seedream5lite(model_id: str, records: list[dict]) -> dict:
     }
 
 
+def _est_seedream5pro(inp: dict, records: list[dict]) -> dict:
+    """seedream 5 Pro per-image billing from the live table: quality basic→1K /
+    high→2K record, plus the 'input image' record per input after the first
+    (first input image free). All rates come from pricing records — no literals."""
+    n_inputs = len(inp.get("image_urls") or [])
+    mode = "image-to-image" if n_inputs else "text-to-image"
+    res = "2K" if inp.get("quality", "basic") == "high" else "1K"
+    rec = _find(records, "seedream 5 Pro", mode, res)
+    base = _credits(rec)
+    if base is None:
+        return {
+            "credits": None, "usd": None, "unit": None,
+            "formula": f"seedream 5 Pro {mode} {res}",
+            "source": "unmatched",
+            "note": "No pricing record matched; run 'kie pricing --refresh'.",
+        }
+
+    billable_inputs = max(0, n_inputs - 1)
+    surcharge = 0.0
+    if billable_inputs:
+        in_rec = _find(records, "seedream 5 Pro", "input image")
+        unit_in = _credits(in_rec)
+        if unit_in is None:
+            return {
+                "credits": None, "usd": None, "unit": base,
+                "formula": f"seedream 5 Pro {mode} {res} + input image surcharge",
+                "source": "unmatched",
+                "note": "No 'input image' pricing record matched; run 'kie pricing --refresh'.",
+            }
+        surcharge = unit_in * billable_inputs
+
+    credits = base + surcharge
+    if billable_inputs:
+        formula = (f"{base} cr/image ({res}) + {surcharge:g} cr "
+                   f"({billable_inputs} extra input image{'s' if billable_inputs > 1 else ''}; first free)")
+    else:
+        formula = f"fixed {base} credits/image ({res})"
+    return {
+        "credits": credits,
+        "usd": round(credits * CREDIT_USD, 4),
+        "unit": base,
+        "formula": formula,
+        "source": "estimate",
+    }
+
+
 def _est_z_image(records: list[dict]) -> dict:
     rec = _find(records, "Qwen z-image")
     credits = _credits(rec) or 0.8
@@ -592,6 +638,9 @@ def _estimate_inner(model: "Model", inp: dict, extra_input_seconds: float = 0.0)
 
     if mid == "seedream/5-lite-text-to-image":
         return _est_seedream5lite(mid, records)
+
+    if mid == "seedream/5-pro-text-to-image":
+        return _est_seedream5pro(inp, records)
 
     if mid == "z-image":
         return _est_z_image(records)
