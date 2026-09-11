@@ -15,7 +15,7 @@ prompt with the same video ref rendered verbatim). Keep prompts ≤~3000 chars a
 dummy is free. --no-dummy-ref is a manual escape hatch: reach for it only if a
 dialogue regression reappears on an already-lean prompt.
 
-Cost rationale (when you do opt in): seedance-2 / seedance-2-fast / seedance-2-mini
+Cost rationale (when you do opt in): seedance-2 / -fast / -mini / -2-5
 bill per second on two SKUs — a pricier "no video input" rate and a cheaper "with video input" rate
 charged on (input_s + output_s). A throwaway 2s clip flips onto the cheaper SKU; the
 2 extra input-seconds cost less than the rate discount for output >= the 4s minimum.
@@ -28,11 +28,12 @@ upload, no per-machine state. Dimensions are load-bearing: the r2v input floor i
 from __future__ import annotations
 
 # Models with a cheaper "with video input" per-second SKU that accept
-# reference_video_urls. Only these three seedance-2 models are eligible.
+# reference_video_urls. Only these seedance-2.x models are eligible.
 _ELIGIBLE = {
     "bytedance/seedance-2",
     "bytedance/seedance-2-fast",
     "bytedance/seedance-2-mini",
+    "bytedance/seedance-2-5",
 }
 
 # Duration of the blank clip, in seconds. Drives the cost estimate.

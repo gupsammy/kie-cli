@@ -384,3 +384,23 @@ def test_normalize_ts_epoch_seconds():
     """Bare epoch seconds (< 1e12) are treated as seconds, not millis."""
     from kie_cli.cli import _normalize_ts
     assert _normalize_ts(1781078058) == "2026-06-10T07:54:18Z"
+
+
+def test_models_json_includes_source(capsys):
+    args = _parse(["models", "--json"])
+    from kie_cli.api import Client
+    cmd_models(args, Client(api_key="test-key"))
+    rows = [json.loads(line) for line in capsys.readouterr().out.splitlines() if line.strip()]
+    sources = {r["source"] for r in rows}
+    assert sources == {"builtin", "catalog"}
+
+
+def test_schema_json_catalog_model_has_doc(capsys):
+    from kie_cli.cli import cmd_schema
+    from kie_cli.api import Client
+    args = _parse(["schema", "minimax-h3-t2v", "--json"])
+    cmd_schema(args, Client(api_key="test-key"))
+    obj = json.loads(capsys.readouterr().out)
+    assert obj["model"] == "minimax-h3/text-to-video"
+    assert obj["doc"].startswith("https://docs.kie.ai/market/minimax-h3/")
+    assert any(p["name"] == "prompt" and p["required"] for p in obj["params"])

@@ -26,19 +26,19 @@ def test_seedance2_1080p_8s_no_video_input():
 
 
 def test_seedance2_fast_720p_5s():
-    """SPEC §15: seedance-2-fast 720p 5s = 165 credits."""
+    """seedance-2-fast 720p 5s = 24.8 cr/s × 5 = 124 credits (snapshot 2026-09-11; was 33/s)."""
     est = _est("seedance-2-fast", {"resolution": "720p", "duration": 5})
-    assert est["credits"] == 165
-    assert est["usd"] == pytest.approx(0.825)
+    assert est["credits"] == pytest.approx(124.0)
+    assert est["usd"] == pytest.approx(0.62)
     assert est["source"] == "estimate"
 
 
 def test_seedance2_mini_720p_5s_no_video():
-    """mini 720p 5s no video = 20.5 cr/s × 5 = 102.5 credits. Exercises the mini
-    description format ('720P', 'no video' without the 'input' suffix)."""
+    """mini 720p 5s no video = 8.2 cr/s × 5 = 41 credits (snapshot 2026-09-11).
+    Exercises the mini description format ('720P', 'no video' without the 'input' suffix)."""
     est = _est("seedance-2-mini", {"resolution": "720p", "duration": 5})
-    assert est["credits"] == pytest.approx(102.5)
-    assert est["unit"] == pytest.approx(20.5)
+    assert est["credits"] == pytest.approx(41.0)
+    assert est["unit"] == pytest.approx(8.2)
     assert est["source"] == "estimate"
 
 
@@ -46,7 +46,82 @@ def test_seedance2_mini_does_not_match_base_sku():
     """The base seedance-2 lookup must not pick up a mini record (the 'input'
     suffix on base/fast tags is what discriminates them)."""
     base = _est("seedance-2", {"resolution": "720p", "duration": 5})
-    assert base["unit"] == pytest.approx(41.0)  # base 720p no-input rate, not mini's 20.5
+    assert base["unit"] == pytest.approx(41.0)  # base 720p no-input rate, not mini's 8.2
+
+
+def test_seedance25_720p_4s_no_video():
+    """seedance-2-5 720p no video = 63 cr/s × 4 = 252 credits."""
+    est = _est("seedance-2.5", {"resolution": "720p", "duration": 4})
+    assert est["credits"] == pytest.approx(252.0)
+    assert est["unit"] == pytest.approx(63.0)
+    assert est["source"] == "estimate"
+
+
+def test_seedance25_with_video_ref_bills_input_plus_output():
+    """720p with video = 38 cr/s × (3.7s ref + 4s out) = 292.6 credits."""
+    est = pricing.estimate(
+        resolve("seedance-2.5"),
+        {"resolution": "720p", "duration": 4, "reference_video_urls": ["https://x/ref.mp4"]},
+        extra_input_seconds=3.7,
+    )
+    assert est["credits"] == pytest.approx(292.6)
+    assert est["unit"] == pytest.approx(38.0)
+    assert "3.7s ref" in est["formula"]
+
+
+def test_seedance25_lookup_does_not_bleed_into_base_or_mini():
+    """'bytedance/seedance-2-5, 720p no video' must not satisfy the base ('no video input')
+    or mini ('seedance-2-mini') matchers, and vice versa."""
+    assert _est("seedance-2", {"resolution": "720p", "duration": 1})["unit"] == pytest.approx(41.0)
+    assert _est("seedance-2-mini", {"resolution": "720p", "duration": 1})["unit"] == pytest.approx(8.2)
+    assert _est("seedance-2.5", {"resolution": "720p", "duration": 1})["unit"] == pytest.approx(63.0)
+
+
+# ── Catalog models: generic lookup ────────────────────────────────────────────
+
+def test_catalog_per_second_minimax_h3():
+    est = _est("minimax-h3-t2v", {"resolution": "768P", "duration": 6})
+    assert est["credits"] == pytest.approx(48.0)      # 8 cr/s × 6
+    assert est["source"] == "estimate"
+
+
+def test_catalog_per_second_kling_turbo_resolution_token():
+    est = _est("kling-v3-turbo-i2v", {"resolution": "1080p", "duration": 5})
+    assert est["credits"] == pytest.approx(112.5)     # 22.5 cr/s × 5
+
+
+def test_catalog_audio_token_narrows_rows():
+    on = _est("pixverse-v6-t2v", {"quality": "720p", "duration": 5, "generate_audio_switch": True})
+    off = _est("pixverse-v6-t2v", {"quality": "720p", "duration": 5, "generate_audio_switch": False})
+    assert on["credits"] == pytest.approx(48.0)       # 9.6 × 5
+    assert off["credits"] == pytest.approx(36.0)      # 7.2 × 5
+
+
+def test_catalog_fixed_sku_duration_token():
+    est = _est("kling-v2-1-standard", {"duration": 10})
+    assert est["credits"] == pytest.approx(50.0)
+
+
+def test_catalog_ambiguous_lists_candidates():
+    est = _est("ideogram-v3-t2i", {})
+    assert est["credits"] is None
+    assert est["source"] == "ambiguous"
+    assert len(est["candidates"]) == 3
+    picked = _est("ideogram-v3-t2i", {"rendering_speed": "TURBO"})
+    assert picked["credits"] == pytest.approx(3.5)
+
+
+def test_catalog_per_second_unknown_duration_returns_unit_only():
+    est = _est("wan-2-2-animate-move", {"resolution": "720p"})
+    assert est["credits"] is None
+    assert est["unit"] == pytest.approx(12.5)
+    assert est["source"] == "estimate"
+
+
+def test_catalog_per_megapixel_unknown_credits():
+    est = _est("qwen-t2i", {})
+    assert est["credits"] is None
+    assert est["unit"] == pytest.approx(4.0)
 
 
 def test_z_image_golden():

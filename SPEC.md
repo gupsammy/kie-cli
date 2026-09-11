@@ -150,6 +150,21 @@ Exact model ids, full param tables, and enums: `research/kie-research.json` (`.s
 `.otherVideo.models`, `.images.models`). Registry stores per model: id, aliases (short names:
 `seedance-2`, `nano-banana`, `z-image`, ...), kind, modes (t2v/i2v/edit), param specs (for `schema`
 + type coercion + required check), common-flag mapping, mutual-exclusion groups, pricing rule key.
+
+**Catalog models (2026-09-11).** Every other market model — one entry per endpoint, so a family
+with separate t2v/i2v/r2v endpoints is three ids (`minimax-h3/text-to-video`, `…/image-to-video`,
+`…/reference-to-video`, aliases `minimax-h3-t2v` / `-i2v` / `-r2v`) — is loaded from
+`src/kie_cli/data/models-catalog.json`, generated from the docs.kie.ai OpenAPI pages by
+`research/build_catalog.py` (`uv run --with pyyaml python research/build_catalog.py`). Flag
+mappings are inferred from parameter names (`resolution`|`quality`, `generate_audio`|`sound`|
+`audio`|`generate_audio_switch`, first-frame/`image_urls`/`image_url`/`input_urls`/…); hand-written
+entries win on id/alias collision. `kie models --json` reports `source: builtin|catalog`; `kie schema`
+prints the doc URL. Pricing for catalog models is a generic lookup (`pricing._est_catalog`): a hint
+table maps id prefix → pricing-row substrings, rows are narrowed by the input's resolution/quality/
+rendering_speed/mode tokens, duration, audio on/off and video-input presence; one row → estimate,
+several → `source: ambiguous` with `candidates` listed. Not in the catalog: dedicated (non-market)
+APIs — Veo 3.1, Runway, Suno, Flux Kontext, 4o Image, and the Gemini Omni audio/character
+endpoints (`/api/v1/omni/*`).
 Validation philosophy: hard-validate required fields + flag-mapped enums; pass everything else
 through (server is source of truth — never block a param the server might accept).
 
