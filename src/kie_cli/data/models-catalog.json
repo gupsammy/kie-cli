@@ -3797,7 +3797,7 @@
     "desc": "Enter a list of image URLs or asset://{assetId} (for example: asset://asset-20260404242101-76djj)."
    },
    {
-    "name": "reference_video_urls ",
+    "name": "reference_video_urls",
     "type": "array",
     "required": false,
     "desc": "Enter a list of video URLs or asset://{assetId} (for example: asset://asset-20260404242101-76djj)."
@@ -5211,9 +5211,9 @@
     "desc": "Text prompt describing the video to generate (any language). Max 5,000 non‑Chinese characters or 2,500 Chinese characters; extra content is truncated."
    },
    {
-    "name": "image_urls ",
+    "name": "image_urls",
     "type": "array",
-    "required": true,
+    "required": false,
     "desc": "First-frame image URL list. Exactly one image is required."
    },
    {
@@ -5380,7 +5380,7 @@
     "desc": "Input video URL list. Exactly one video is required."
    },
    {
-    "name": "reference_image ",
+    "name": "reference_image",
     "type": "array",
     "required": false,
     "desc": "Optional reference image URL list (0–5)."

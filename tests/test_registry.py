@@ -289,3 +289,18 @@ def test_catalog_never_shadows_builtin():
     assert MODELS["bytedance/seedance-2"].source == "builtin"
     assert MODELS["seedream/5-pro-text-to-image"].source == "builtin"
     assert "seedream/5-pro-image-to-image" not in MODELS  # it is an alias of the builtin
+
+
+def test_catalog_single_style_maps_second_image_to_last_frame():
+    m = resolve("pixverse-v6-transition")
+    inp = m.build_input({"prompt": "t", "image": ["https://x/a.png", "https://x/b.png"]}, {},
+                        validate_required=False)
+    assert inp["first_frame_image_url"] == "https://x/a.png"
+    assert inp["last_frame_image_url"] == "https://x/b.png"
+
+
+def test_catalog_param_names_are_stripped():
+    m = resolve("happyhorse-1-1-i2v")
+    assert m.image_field_style == "image_urls"
+    inp = m.build_input({"prompt": "p", "image": ["https://x/a.png"]}, {}, validate_required=False)
+    assert inp["image_urls"] == ["https://x/a.png"]

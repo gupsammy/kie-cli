@@ -87,3 +87,12 @@ def test_user_ref_estimate_keeps_unknown_input_caveat():
     )
     assert est["credits"] == pytest.approx(57.5)  # 11.5 × 5, output only
     assert "note" in est
+
+
+def test_wants_dummy_skipped_on_first_frame_run():
+    """first/last-frame and reference-* scenarios are mutually exclusive per the docs."""
+    assert dummy_ref.wants_dummy("bytedance/seedance-2-5",
+                                 {"first_frame_url": "https://x/a.png"}, enabled=True) is False
+    assert dummy_ref.wants_dummy("bytedance/seedance-2",
+                                 {"first_frame_url": "https://x/a.png",
+                                  "last_frame_url": "https://x/b.png"}, enabled=True) is False

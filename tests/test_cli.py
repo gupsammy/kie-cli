@@ -235,13 +235,15 @@ def test_confirmation_gate_under_threshold_proceeds():
                model_id="test", args=args)
 
 
-def test_confirmation_gate_credits_none_skips_gate():
-    """credits=None (unknown pricing) → gate is skipped, no raise."""
+def test_confirmation_gate_credits_none_with_yes_proceeds():
+    """credits=None (unknown pricing) is never silently submitted: --yes proceeds,
+    --max-credits cannot be enforced (exit 7), non-TTY without --yes needs --yes."""
     est = {"credits": None, "usd": None}
     args = MagicMock()
-    # Should NOT raise even with --max-credits set
-    _cost_gate(est, yes=False, max_credits=50.0, use_json=False,
-               model_id="test", args=args)
+    _cost_gate(est, yes=True, max_credits=None, use_json=False, model_id="test", args=args)
+    with pytest.raises(KieError) as ei:
+        _cost_gate(est, yes=True, max_credits=50.0, use_json=False, model_id="test", args=args)
+    assert ei.value.code == "estimate_unavailable"
 
 
 # ── --max-credits hard cap (not bypassed by --yes) ────────────────────────────
@@ -404,3 +406,24 @@ def test_schema_json_catalog_model_has_doc(capsys):
     assert obj["model"] == "minimax-h3/text-to-video"
     assert obj["doc"].startswith("https://docs.kie.ai/market/minimax-h3/")
     assert any(p["name"] == "prompt" and p["required"] for p in obj["params"])
+
+
+def test_cost_gate_unknown_estimate_with_max_credits_exit7():
+    args = _parse(["generate", "x", "-p", "p"])
+    with pytest.raises(KieError) as ei:
+        _cost_gate({"credits": None, "usd": None, "source": "ambiguous",
+                    "note": "several rows"}, yes=False, max_credits=100, use_json=True,
+                   model_id="kling-3.0-omni/image-to-video", args=args)
+    assert ei.value.code == "estimate_unavailable" and ei.value.exit_code == 7
+
+
+def test_cost_gate_unknown_estimate_non_tty_requires_yes(monkeypatch):
+    args = _parse(["generate", "x", "-p", "p"])
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
+    with pytest.raises(KieError) as ei:
+        _cost_gate({"credits": None, "usd": None, "source": "unmatched"}, yes=False,
+                   max_credits=None, use_json=True, model_id="m", args=args)
+    assert ei.value.code == "confirmation_required"
+    # --yes proceeds
+    _cost_gate({"credits": None, "usd": None, "source": "unmatched"}, yes=True,
+               max_credits=None, use_json=True, model_id="m", args=args)

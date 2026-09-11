@@ -5,6 +5,7 @@ SPEC §12 / §13.
 from __future__ import annotations
 
 import json
+import sys
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -112,6 +113,8 @@ class Model:
                 result[style[5:]] = imgs
             elif style.startswith("single:"):
                 result[style[7:]] = imgs[0]
+                if len(imgs) > 1 and fm.last_frame:
+                    result[fm.last_frame] = imgs[1]
             # else: none / unsupported — drop silently (server is truth)
 
         if "last_frame" in common and common["last_frame"] is not None:
@@ -1045,6 +1048,8 @@ def _catalog_alias(mid: str) -> str:
 
 
 def _catalog_model(entry: dict) -> Model:
+    for p in entry["params"]:
+        p["name"] = p["name"].strip()   # docs carry stray trailing spaces ('image_urls ')
     names = {p["name"] for p in entry["params"]}
 
     def pick(cands: list[str]) -> str | None:
@@ -1078,8 +1083,9 @@ def _catalog_model(entry: dict) -> Model:
 def _load_catalog() -> None:
     try:
         entries = json.loads(_CATALOG.read_text())
-    except (OSError, ValueError):
-        return  # catalog missing/corrupt → hand-written models only
+    except (OSError, ValueError) as exc:
+        print(f"warning: model catalog unreadable ({exc}); builtin models only", file=sys.stderr)
+        return
     taken = set(MODELS) | {a for m in MODELS.values() for a in m.aliases}
     for entry in entries:
         mid = entry.get("id")

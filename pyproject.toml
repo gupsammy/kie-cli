@@ -15,10 +15,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["src/kie_cli"]
-
-[tool.hatch.build.targets.wheel.force-include]
-"src/kie_cli/data" = "kie_cli/data"
+packages = ["src/kie_cli"]   # package data under src/kie_cli/data ships with it
 
 [tool.pytest.ini_options]
 pythonpath = ["src"]

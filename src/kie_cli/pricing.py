@@ -109,22 +109,21 @@ def _est_seedance2(model_id: str, inp: dict, records: list[dict],
     is_25 = "seedance-2-5" in model_id
     res = inp.get("resolution", "720p").lower()
     has_video_input = bool(inp.get("reference_video_urls"))
-    duration = int(inp.get("duration", 5))
+    try:
+        duration = int(inp.get("duration", 5))
+    except (TypeError, ValueError):
+        duration = 0
 
     # Build matcher substrings. mini records use a distinct description format:
     # "bytedance/seedance-2-mini, 720P no video" — hyphenated, capital P (folded by
     # the case-insensitive matcher), and "no video"/"with video" WITHOUT the trailing
     # "input" that base/fast carry. That missing suffix also keeps the base lookup
     # below from accidentally matching a mini record.
-    if is_25:
-        # "bytedance/seedance-2-5, 720p with video" — same short tags as mini.
+    if is_25 or is_mini:
+        # short-tag rows: "bytedance/seedance-2-5, 720p with video" / "...-2-mini, 720P no video"
+        prefix = "bytedance/seedance-2-5" if is_25 else "bytedance/seedance-2-mini"
         video_tag = "with video" if has_video_input else "no video"
-        rec = _find(records, "bytedance/seedance-2-5", res, video_tag)
-        prefix = "bytedance/seedance-2-5"
-    elif is_mini:
-        video_tag = "with video" if has_video_input else "no video"
-        rec = _find(records, "bytedance/seedance-2-mini", res, video_tag)
-        prefix = "bytedance/seedance-2-mini"
+        rec = _find(records, prefix, res, video_tag)
     elif is_fast:
         video_tag = "with video input" if has_video_input else "no video input"
         rec = _find(records, "bytedance/seedance-2 fast", res, video_tag)
@@ -143,6 +142,16 @@ def _est_seedance2(model_id: str, inp: dict, records: list[dict],
             "formula": f"{prefix} {res} {video_tag}",
             "source": "unmatched",
             "note": f"No pricing record matched for {prefix!r} {res} {video_tag!r}",
+        }
+
+    if duration <= 0:
+        # -1 = "model picks" (seedance-2-5); the render may run to the 30s cap.
+        return {
+            "credits": None, "usd": None, "unit": unit,
+            "formula": f"{unit} cr/s × output_seconds ({prefix} {res} {video_tag})",
+            "source": "estimate",
+            "note": "Output duration unknown (duration <= 0 lets the model choose); "
+                    "credits = unit × (input_s + output_s).",
         }
 
     if has_video_input:
@@ -212,13 +221,10 @@ def _est_grok_video(model_id: str, inp: dict, records: list[dict]) -> dict:
     res = inp.get("resolution", "480p").lower()
     duration = int(inp.get("duration", 10))
 
-    # The pricing records show two grok video entries:
-    # "grok-imagine-video-1-5-preview" (per-second) and "grok-imagine" (older, per-second)
-    rec = _find(records, "grok-imagine-video-1-5-preview", res)
-    if rec is None:
-        rec = _find(records, "grok-imagine", res)
-        if rec and "image-to-image" in rec.get("modelDescription", "").lower():
-            rec = None  # wrong table entry
+    # Rows: "grok-imagine, text-to-video, 1080p" / "grok-imagine, image-to-video, 720p".
+    # Match on the mode label so the upscale / image rows can never be picked.
+    mode_label = "text-to-video" if "text" in model_id else "image-to-video"
+    rec = _find(records, "grok-imagine,", mode_label, res)
     unit = _credits(rec)
     if unit is None:
         return {
@@ -640,6 +646,8 @@ _CATALOG_HINTS: list[tuple[str, list[str], str | None]] = [
     ("gpt-image-2-image-to-image", ["gpt image 2,", "image-to-image"], None),
     ("gpt-image/1.5-text-to-image", ["gpt image 1.5", "text-to-image"], None),
     ("gpt-image/1.5-image-to-image", ["gpt image 1.5", "image-to-image"], None),
+    ("grok-imagine/text-to-image", ["grok-imagine, text-to-image"], None),
+    ("grok-imagine/image-to-image", ["grok-imagine, image-to-image"], None),
     ("grok-imagine-image-2-0/text-to-image", ["grok-imagine-image-2-0", "text to image"], None),
     ("grok-imagine-image-2-0/", ["grok-imagine-image-2-0", "image edit"], None),
     ("qwen3/pro-text-to-image", ["qwen image 3.0 pro", "text to image"], None),
@@ -678,11 +686,38 @@ _AUDIO_ANY = _AUDIO_ON + _AUDIO_OFF
 _DUR_RE = re.compile(r"(?<![0-9.])(\d+(?:\.\d+)?)s(?![a-z0-9])")
 
 
-def _narrow(cands: list[dict], keep) -> list[dict]:
-    """Apply a filter only when it keeps at least one row (an inapplicable token
-    must not empty the candidate set)."""
+def _narrow(cands: list[dict], keep, applicable: bool | None = None) -> list[dict]:
+    """Filter candidate rows.
+
+    applicable=True  → the rows encode this token kind, so an empty result is a real
+                       miss (no SKU for that value) and [] is returned.
+    applicable=False → the rows don't encode it; skip the filter.
+    applicable=None  → unknown; keep the filter only if it leaves something.
+    """
+    if applicable is False:
+        return cands
     kept = [r for r in cands if keep(r["modelDescription"].lower())]
-    return kept or cands
+    if applicable is None:
+        return kept or cands
+    return kept
+
+
+def _as_bool(v) -> bool:
+    """Coerce raw --param / --input-json values: 'false', '0', 'off', 'no' → False."""
+    if isinstance(v, str):
+        return v.strip().lower() not in ("", "false", "0", "off", "no", "none", "null")
+    return bool(v)
+
+
+def _unmatched_value(mid: str, key: str, val, rows: list[dict]) -> dict:
+    return {
+        "credits": None, "usd": None, "unit": None,
+        "formula": f"{mid}: no pricing row for {key}={val}",
+        "source": "unmatched",
+        "candidates": [{"description": r["modelDescription"],
+                        "credits": _credits(r), "unit": r.get("creditUnit")} for r in rows],
+        "note": f"No pricing row for {key}={val!r}; see 'candidates' for the SKUs that exist.",
+    }
 
 
 def _est_catalog(model: "Model", inp: dict, records: list[dict],
@@ -703,35 +738,53 @@ def _est_catalog(model: "Model", inp: dict, records: list[dict],
                 "formula": f"{mid} ({' + '.join(needles)})", "source": "unmatched",
                 "note": "No pricing record matched; run 'kie pricing --refresh'."}
 
-    # value tokens: resolution / quality / rendering_speed / mode
+    descs = [r["modelDescription"].lower() for r in cands]
+    enums = {p.name: [str(e).lower() for e in p.enum] for p in model.params if p.enum}
+
+    # video input present / absent — first, because with-video rows may carry no
+    # duration token (gemini-omni) and would be lost to the duration filter.
+    has_video = bool(inp.get("reference_video_urls") or inp.get("video_urls")
+                     or inp.get("video_url") or inp.get("video_list"))
+    if any("video input" in d for d in descs):
+        tok = "with video" if has_video else "no video"
+        before = cands
+        cands = _narrow(cands, lambda d: tok in d, applicable=True)
+        if not cands:
+            return _unmatched_value(mid, "video_input", has_video, before)
+
+    # value tokens: resolution / quality / rendering_speed / mode. Applicable when the
+    # rows mention any of the param's enum values; then a miss is a real miss.
     for key in _TOKEN_FIELDS:
         val = inp.get(key)
-        if val is not None:
-            tok = str(val).lower()
-            cands = _narrow(cands, lambda d, t=tok: t in d)
+        if val is None:
+            continue
+        tok = str(val).lower()
+        applicable = True if any(e in d for e in enums.get(key, []) for d in descs) else None
+        before = cands
+        cands = _narrow(cands, lambda d, t=tok: t in d, applicable)
+        if not cands:
+            return _unmatched_value(mid, key, val, before)
 
     # duration-keyed rows ("5.0s", "10s")
     dur = inp.get("duration")
     if dur is not None and any(_DUR_RE.search(r["modelDescription"]) for r in cands):
         try:
             want = float(dur)
-            cands = _narrow(cands, lambda d: any(float(m) == want for m in _DUR_RE.findall(d)))
         except (TypeError, ValueError):
-            pass
+            want = None
+        if want is not None and want > 0:
+            before = cands
+            cands = _narrow(cands, lambda d: any(float(m) == want for m in _DUR_RE.findall(d)),
+                            applicable=True)
+            if not cands:
+                return _unmatched_value(mid, "duration", dur, before)
 
     # audio on/off
     audio = next((inp[k] for k in ("generate_audio", "sound", "audio", "generate_audio_switch")
                   if k in inp), None)
-    if audio is not None and any(t in r["modelDescription"].lower() for r in cands for t in _AUDIO_ANY):
-        toks = _AUDIO_ON if audio else _AUDIO_OFF
-        cands = _narrow(cands, lambda d: any(t in d for t in toks))
-
-    # video input present / absent
-    has_video = bool(inp.get("reference_video_urls") or inp.get("video_urls")
-                     or inp.get("video_url") or inp.get("video_list"))
-    if any("video input" in r["modelDescription"].lower() for r in cands):
-        tok = "with video" if has_video else "no video"
-        cands = _narrow(cands, lambda d: tok in d)
+    if audio is not None and any(t in d for d in descs for t in _AUDIO_ANY):
+        toks = _AUDIO_ON if _as_bool(audio) else _AUDIO_OFF
+        cands = _narrow(cands, lambda d: any(t in d for t in toks), applicable=True) or cands
 
     if len(cands) > 1:
         return {
@@ -761,7 +814,8 @@ def _est_catalog(model: "Model", inp: dict, records: list[dict],
             duration = float(duration)
         except (TypeError, ValueError):
             duration = None
-        if duration is None or duration < 0:
+        if duration is None or duration <= 0:
+            # 0 = "follow the input video" (wan videoedit), -1 = model picks.
             return {"credits": None, "usd": None, "unit": unit,
                     "formula": f"{unit} cr/s × output_seconds ({desc})", "source": "estimate",
                     "note": "Output duration unknown; credits = unit × seconds."}

@@ -206,9 +206,34 @@ def _cost_gate(
     """Apply cost confirmation gate (§5). Raises KieError or exits."""
     credits = estimate["credits"]
 
-    # credits=None means pricing unknown; skip gate entirely (server will validate)
+    # credits=None: pricing unknown or ambiguous. Never silently submit — a hard cap
+    # cannot be enforced, and an unknown price must be confirmed like an expensive one.
     if credits is None:
-        return
+        why = estimate.get("note") or estimate.get("formula") or "no pricing record matched"
+        if max_credits is not None:
+            raise KieError(
+                "estimate_unavailable",
+                f"No cost estimate for {model_id} ({why}); --max-credits cannot be enforced",
+                hint=f"kie cost {model_id} ... to see candidate rows; narrow with "
+                     "--resolution/--duration/--param, or drop --max-credits and pass --yes",
+                exit_code=7,
+            )
+        if yes:
+            return
+        if sys.stdin.isatty() and sys.stdout.isatty():
+            try:
+                ans = input(f"Cost estimate unavailable ({why}). Proceed? [y/N] ")
+            except (EOFError, KeyboardInterrupt):
+                raise KieError("confirmation_required", "Confirmation declined", exit_code=7)
+            if ans.strip().lower() != "y":
+                raise KieError("confirmation_required", "Confirmation declined", exit_code=7)
+            return
+        raise KieError(
+            "confirmation_required",
+            f"Cost estimate unavailable for {model_id} ({why}); re-run with --yes",
+            hint=f"kie generate {model_id} ... --yes",
+            exit_code=7,
+        )
 
     # Hard cap — not bypassed by --yes
     if max_credits is not None and credits > max_credits:
@@ -432,7 +457,12 @@ def cmd_cost(args: Any, client: Client) -> int:
         # credits/usd are None when no pricing record matched — render gracefully
         # instead of crashing on the float format spec.
         if credits is None:
-            estimate_line = "Estimate: unknown (no pricing record matched)"
+            src = est.get("source")
+            estimate_line = ("Estimate: unknown (several pricing rows match — see candidates)"
+                             if src == "ambiguous" else
+                             "Estimate: unknown (duration/size needed to price)"
+                             if src == "estimate" else
+                             "Estimate: unknown (no pricing record matched)")
         else:
             estimate_line = f"Estimate: {credits} credits (${est['usd']:.4f} USD)"
         note = est.get("note")

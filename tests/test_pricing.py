@@ -217,3 +217,57 @@ def test_seedream5pro_i2i_extra_input_image_surcharge():
     # 14 (2K) + 0.5 × 2 extra input images
     assert est["credits"] == pytest.approx(15.0)
     assert "first free" in est["formula"]
+
+
+# ── Review regressions (PR #1) ────────────────────────────────────────────────
+
+def test_seedance25_duration_minus_one_is_not_priced():
+    """duration -1 (model picks) must not yield negative credits."""
+    est = _est("seedance-2.5", {"resolution": "720p", "duration": -1})
+    assert est["credits"] is None
+    assert est["unit"] == pytest.approx(63.0)
+    assert "unknown" in est["note"]
+
+
+def test_grok_video_never_matches_upscale_row():
+    est = _est("grok-t2v", {"resolution": "1080p", "duration": 10})
+    assert est["unit"] == pytest.approx(8.0)
+    assert est["credits"] == pytest.approx(80.0)
+    est = _est("grok-i2v", {"resolution": "720p", "duration": 10})
+    assert est["unit"] == pytest.approx(4.5)
+
+
+def test_catalog_video_input_narrowed_before_duration():
+    """gemini-omni with-video rows carry no duration token; they must survive."""
+    est = _est("gemini-omni-video", {"resolution": "720p", "duration": 10,
+                                     "video_list": ["https://x/a.mp4"]})
+    assert est["credits"] == pytest.approx(168.0)
+    est = _est("gemini-omni-video", {"resolution": "720p", "duration": 10})
+    assert est["credits"] == pytest.approx(126.0)
+
+
+def test_catalog_zero_duration_default_not_priced_as_free():
+    est = _est("wan-2-7-videoedit", {"resolution": "1080p", "duration": 0})
+    assert est["credits"] is None
+    assert est["unit"] == pytest.approx(24.0)
+
+
+def test_catalog_missing_sku_is_unmatched_not_neighbour():
+    """hailuo 02 i2v standard has no 6.0s-768p row: report a miss, not the 10s row."""
+    est = _est("hailuo-02-i2v-standard", {"duration": 6, "resolution": "768P"})
+    assert est["credits"] is None
+    assert est["source"] == "unmatched"
+    assert "duration" in est["formula"]
+    assert est["candidates"]
+
+
+def test_catalog_audio_string_false_is_off():
+    off = _est("kling-3.0-omni-i2v", {"resolution": "720p", "duration": 5, "audio": "false"})
+    on = _est("kling-3.0-omni-i2v", {"resolution": "720p", "duration": 5, "audio": True})
+    assert off["unit"] == pytest.approx(14.0)
+    assert on["unit"] == pytest.approx(20.0)
+
+
+def test_catalog_grok_image_models_priced():
+    est = _est("grok-imagine-i2i", {})
+    assert est["credits"] == pytest.approx(4.0)

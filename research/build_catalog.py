@@ -92,6 +92,7 @@ def _parse(kind: str, family: str, title: str, url: str, txt: str) -> dict | Non
 
     params = []
     for name, p in iprops.items():
+        name = name.strip()  # docs carry stray trailing spaces ('image_urls ')
         p = _deref(p, comps)
         t = p.get("type", "string")
         if isinstance(t, list):
@@ -111,6 +112,10 @@ def _parse(kind: str, family: str, title: str, url: str, txt: str) -> dict | Non
 
 def main() -> int:
     rows = _index()
+    if not rows:
+        print("ERROR: llms.txt returned no market pages (transient fetch failure?) — "
+              "not writing", file=sys.stderr)
+        return 1
     with ThreadPoolExecutor(16) as ex:
         pages = list(ex.map(lambda r: _fetch(r[3]), rows))
     catalog, skipped = [], []
@@ -126,6 +131,15 @@ def main() -> int:
     dups = sorted({i for i in ids if ids.count(i) > 1})
     if dups:
         print("ERROR duplicate ids:", dups, file=sys.stderr)
+        return 1
+    # Refuse to shrink the shipped catalog: a flaky page fetch must not drop models.
+    try:
+        prev = len(json.loads(OUT.read_text()))
+    except (OSError, ValueError):
+        prev = 0
+    if len(catalog) < prev:
+        print(f"ERROR: parsed {len(catalog)} models but the shipped catalog has {prev}; "
+              f"skipped pages: {[u for u, _ in skipped]} — re-run, not writing", file=sys.stderr)
         return 1
     OUT.write_text(json.dumps(catalog, indent=1, ensure_ascii=False) + "\n")
     print(f"wrote {OUT} — {len(catalog)} models "
