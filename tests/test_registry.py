@@ -236,3 +236,71 @@ def test_seedream5pro_defaults_applied():
     assert inp["aspect_ratio"] == "1:1"
     assert inp["quality"] == "basic"
     assert inp["output_format"] == "png"
+
+
+# ── seedance-2-5 ──────────────────────────────────────────────────────────────
+
+def test_resolve_seedance25_aliases():
+    for alias in ("seedance-2.5", "seedance-2-5", "bytedance/seedance-2-5"):
+        assert resolve(alias).id == "bytedance/seedance-2-5"
+
+
+def test_seedance25_defaults_and_mutex():
+    model = resolve("seedance-2.5")
+    inp = model.build_input({"prompt": "x", "duration": 6, "resolution": "720p"}, {})
+    assert inp["duration"] == 6 and inp["resolution"] == "720p"
+    assert inp["aspect_ratio"] == "adaptive" and inp["output_format"] == "mp4"
+    with pytest.raises(KieError) as ei:
+        model.build_input({"prompt": "x", "image": ["https://a/first.png"]},
+                          {"reference_image_urls": ["https://a/ref.png"]})
+    assert ei.value.exit_code == 7
+
+
+# ── catalog models ────────────────────────────────────────────────────────────
+
+def test_catalog_models_loaded():
+    from kie_cli.registry import MODELS
+    catalog = [m for m in MODELS.values() if m.source == "catalog"]
+    assert len(catalog) >= 100
+    assert all(m.doc.startswith("https://docs.kie.ai/market/") for m in catalog)
+
+
+def test_catalog_alias_and_flag_inference():
+    m = resolve("minimax-h3-r2v")
+    assert m.id == "minimax-h3/reference-to-video"
+    assert m.image_field_style == "list:reference_image_urls"
+    inp = m.build_input({"prompt": "p", "image": ["https://a/1.png", "https://a/2.png"],
+                         "duration": 6, "resolution": "2K"}, {}, validate_required=False)
+    assert inp["reference_image_urls"] == ["https://a/1.png", "https://a/2.png"]
+    assert inp["duration"] == 6 and inp["resolution"] == "2K"
+
+
+def test_catalog_quality_maps_resolution_flag():
+    m = resolve("pixverse-v6-t2v")
+    inp = m.build_input({"prompt": "p", "resolution": "720p", "audio": False}, {},
+                        validate_required=False)
+    assert inp["quality"] == "720p"
+    assert inp["generate_audio_switch"] is False
+
+
+def test_catalog_never_shadows_builtin():
+    """Ids/aliases hand-written in registry.py win over catalog entries."""
+    from kie_cli.registry import MODELS
+    assert MODELS["bytedance/seedance-2"].source == "builtin"
+    assert MODELS["seedream/5-pro-text-to-image"].source == "builtin"
+    assert "seedream/5-pro-image-to-image" not in MODELS  # it is an alias of the builtin
+
+
+def test_catalog_single_style_maps_second_image_to_last_frame():
+    m = resolve("pixverse-v6-transition")
+    inp = m.build_input({"prompt": "t", "image": ["https://x/a.png", "https://x/b.png"]}, {},
+                        validate_required=False)
+    assert inp["first_frame_image_url"] == "https://x/a.png"
+    assert inp["last_frame_image_url"] == "https://x/b.png"
+
+
+def test_catalog_param_names_are_stripped():
+    m = resolve("happyhorse-1-1-i2v")
+    assert m.image_field_style == "image_urls"
+    inp = m.build_input({"prompt": "p", "image": ["https://x/a.png"]}, {}, validate_required=False)
+    assert inp["image_urls"] == ["https://x/a.png"]

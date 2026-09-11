@@ -12,6 +12,7 @@ from kie_cli.registry import resolve
 
 @pytest.mark.parametrize("model_id", [
     "bytedance/seedance-2", "bytedance/seedance-2-fast", "bytedance/seedance-2-mini",
+    "bytedance/seedance-2-5",
 ])
 def test_wants_dummy_eligible_no_ref(model_id):
     assert dummy_ref.wants_dummy(model_id, {}, enabled=True) is True
@@ -60,11 +61,20 @@ def test_dummy_ref_win_at_minimum_4s_floor():
 
 
 def test_dummy_ref_cheaper_for_mini_480p_4s():
-    """mini bills on its own SKU format: dummy = 6×(2+4)=36 < no-ref 9.5×4=38."""
+    """mini bills on its own SKU format: dummy = 2.4×(2+4)=14.4 < no-ref 3.8×4=15.2."""
     with_dummy = _est_with_dummy("seedance-2-mini", {"resolution": "480p", "duration": 4})
     no_ref = pricing.estimate(resolve("seedance-2-mini"), {"resolution": "480p", "duration": 4})
-    assert with_dummy["credits"] == pytest.approx(36.0)
-    assert no_ref["credits"] == pytest.approx(38.0)
+    assert with_dummy["credits"] == pytest.approx(14.4)
+    assert no_ref["credits"] == pytest.approx(15.2)
+    assert with_dummy["credits"] < no_ref["credits"]
+
+
+def test_dummy_ref_cheaper_for_seedance25_480p_4s():
+    """seedance-2-5 480p: dummy = 17×(2+4)=102 < no-ref 28×4=112."""
+    with_dummy = _est_with_dummy("seedance-2.5", {"resolution": "480p", "duration": 4})
+    no_ref = pricing.estimate(resolve("seedance-2.5"), {"resolution": "480p", "duration": 4})
+    assert with_dummy["credits"] == pytest.approx(102.0)
+    assert no_ref["credits"] == pytest.approx(112.0)
     assert with_dummy["credits"] < no_ref["credits"]
 
 
@@ -77,3 +87,12 @@ def test_user_ref_estimate_keeps_unknown_input_caveat():
     )
     assert est["credits"] == pytest.approx(57.5)  # 11.5 × 5, output only
     assert "note" in est
+
+
+def test_wants_dummy_skipped_on_first_frame_run():
+    """first/last-frame and reference-* scenarios are mutually exclusive per the docs."""
+    assert dummy_ref.wants_dummy("bytedance/seedance-2-5",
+                                 {"first_frame_url": "https://x/a.png"}, enabled=True) is False
+    assert dummy_ref.wants_dummy("bytedance/seedance-2",
+                                 {"first_frame_url": "https://x/a.png",
+                                  "last_frame_url": "https://x/b.png"}, enabled=True) is False

@@ -5,7 +5,9 @@ a real video ref; opt OUT manually with --no-dummy-ref.
 Default-on for cost: most generations have no video ref and bill cheaper with one
 attached (rationale below), so the saving is the common case and the dummy is
 attached automatically. When a real video ref is present (e.g. a continuity/extend
-clip) the dummy is skipped — nothing to do, and --no-dummy-ref is unnecessary.
+clip) the dummy is skipped — nothing to do, and --no-dummy-ref is unnecessary. It is
+also skipped on first/last-frame (i2v) runs: the docs make the frame scenario and the
+reference-* scenario mutually exclusive, so those bill the no-video SKU.
 
 Does the dummy hurt verbatim dialogue? No. An earlier scare blamed dropped dialogue
 on the dummy's r2v mode, but the regression was traced to PROMPT LENGTH, not the ref:
@@ -15,7 +17,7 @@ prompt with the same video ref rendered verbatim). Keep prompts ≤~3000 chars a
 dummy is free. --no-dummy-ref is a manual escape hatch: reach for it only if a
 dialogue regression reappears on an already-lean prompt.
 
-Cost rationale (when you do opt in): seedance-2 / seedance-2-fast / seedance-2-mini
+Cost rationale (when you do opt in): seedance-2 / -fast / -mini / -2-5
 bill per second on two SKUs — a pricier "no video input" rate and a cheaper "with video input" rate
 charged on (input_s + output_s). A throwaway 2s clip flips onto the cheaper SKU; the
 2 extra input-seconds cost less than the rate discount for output >= the 4s minimum.
@@ -28,11 +30,12 @@ upload, no per-machine state. Dimensions are load-bearing: the r2v input floor i
 from __future__ import annotations
 
 # Models with a cheaper "with video input" per-second SKU that accept
-# reference_video_urls. Only these three seedance-2 models are eligible.
+# reference_video_urls. Only these seedance-2.x models are eligible.
 _ELIGIBLE = {
     "bytedance/seedance-2",
     "bytedance/seedance-2-fast",
     "bytedance/seedance-2-mini",
+    "bytedance/seedance-2-5",
 }
 
 # Duration of the blank clip, in seconds. Drives the cost estimate.
@@ -51,5 +54,10 @@ def is_eligible(model_id: str) -> bool:
 
 def wants_dummy(model_id: str, inp: dict, enabled: bool) -> bool:
     """True when the dummy ref should be attached: feature enabled, an eligible
-    model, and the caller supplied no video reference of their own."""
-    return enabled and is_eligible(model_id) and not inp.get("reference_video_urls")
+    model, no video reference of the caller's own, and NOT a first/last-frame
+    run — the seedance-2.x docs make first-frame and reference-* inputs mutually
+    exclusive, so a dummy video ref on an i2v request is an invalid payload."""
+    return (enabled and is_eligible(model_id)
+            and not inp.get("reference_video_urls")
+            and not inp.get("first_frame_url")
+            and not inp.get("last_frame_url"))

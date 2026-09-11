@@ -4,7 +4,10 @@ SPEC §12 / §13.
 """
 from __future__ import annotations
 
+import json
+import sys
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 from .api import KieError
@@ -54,6 +57,7 @@ class Model:
     params: list[Param]
     flag_map: FlagMap
     # image flag style: 'single_url'|'image_urls'|'first_frame_url'|'input_urls'|'image'
+    #                   | 'list:<field>' | 'single:<field>' (catalog models, any field name)
     image_field_style: str = "none"
     # mutual exclusion groups: list of sets of input field names
     mutex_groups: list[frozenset] = field(default_factory=list)
@@ -61,6 +65,8 @@ class Model:
     # (for families that split t2i/i2i into separate endpoints)
     i2i_variant_id: str | None = None
     pricing_key: str = ""
+    doc: str = ""                # docs.kie.ai page (catalog models)
+    source: str = "builtin"      # 'builtin' (hand-written below) | 'catalog' (models-catalog.json)
 
     def effective_id(self, inp: dict) -> str:
         """Upstream model id for this input."""
@@ -103,6 +109,12 @@ class Model:
                 result["input_urls"] = imgs
             elif style == "image":
                 result["image"] = imgs[0]
+            elif style.startswith("list:"):
+                result[style[5:]] = imgs
+            elif style.startswith("single:"):
+                result[style[7:]] = imgs[0]
+                if len(imgs) > 1 and fm.last_frame:
+                    result[fm.last_frame] = imgs[1]
             # else: none / unsupported — drop silently (server is truth)
 
         if "last_frame" in common and common["last_frame"] is not None:
@@ -304,6 +316,48 @@ _sd2m = Model(
     pricing_key="seedance-2-mini",
 )
 MODELS[_sd2m.id] = _sd2m
+
+# ──────────────────────────────────────────────────────────────────────────────
+# bytedance/seedance-2-5
+# Same three mutually-exclusive scenarios as seedance-2 (first frame · first+last
+# frame · multimodal reference set). Differences: duration 4-30 (-1 = model picks),
+# up to 30 reference images / 10 videos / 10 audio, aspect default 'adaptive',
+# output_format, return_last_frame. Docs: /market/bytedance/seedance-2-5.
+# ──────────────────────────────────────────────────────────────────────────────
+_sd25 = Model(
+    id="bytedance/seedance-2-5",
+    aliases=["seedance-2.5", "seedance-2-5"],
+    kind="video",
+    modes=["t2v", "i2v", "r2v"],
+    params=[
+        _p("prompt", "string", desc="max 30000 chars"),
+        _p("first_frame_url", "string", desc="URL; mutex with reference_*_urls"),
+        _p("last_frame_url", "string", desc="Use with first_frame_url"),
+        _p("reference_image_urls", "array", desc="Max 30; mutex with first/last frame"),
+        _p("reference_video_urls", "array", desc="Max 10, 2-30s each, <=30s total; affects billing"),
+        _p("reference_audio_urls", "array", desc="Max 10, 2-30s each"),
+        _p("return_last_frame", "boolean", default=False),
+        _p("generate_audio", "boolean", default=True),
+        _p("resolution", "string", default="720p", enum=["480p", "720p", "1080p"]),
+        _p("aspect_ratio", "string", default="adaptive",
+           enum=["1:1", "4:3", "3:4", "16:9", "9:16", "21:9", "adaptive"]),
+        _p("duration", "integer", default=5, desc="4-30 seconds; -1 = model picks"),
+        _p("output_format", "string", default="mp4", enum=["mp4", "mov"]),
+        _p("web_search", "boolean"),
+        _p("nsfw_checker", "boolean", default=False),
+    ],
+    flag_map=FlagMap(
+        last_frame="last_frame_url",
+        audio="generate_audio",
+    ),
+    image_field_style="first_frame_url",
+    mutex_groups=[
+        frozenset({"first_frame_url", "reference_image_urls"}),
+        frozenset({"last_frame_url", "reference_image_urls"}),
+    ],
+    pricing_key="seedance-2-5",
+)
+MODELS[_sd25.id] = _sd25
 
 # ──────────────────────────────────────────────────────────────────────────────
 # bytedance/seedance-1.5-pro
@@ -950,6 +1004,103 @@ _recraft = Model(
     pricing_key="recraft-remove-bg",
 )
 MODELS[_recraft.id] = _recraft
+
+
+# ── Catalog models ───────────────────────────────────────────────────────────
+# Every other market model comes from data/models-catalog.json, generated from the
+# docs.kie.ai OpenAPI pages by research/build_catalog.py. Flag mappings are inferred
+# from parameter names; hand-written entries above win on any id/alias collision.
+# Pricing for these goes through pricing._est_catalog (generic table lookup).
+
+_CATALOG = Path(__file__).parent / "data" / "models-catalog.json"
+
+_MODE_ABBR = {
+    "text-to-video": "t2v", "image-to-video": "i2v", "reference-to-video": "r2v",
+    "video-to-video": "v2v", "text-to-image": "t2i", "image-to-image": "i2i",
+}
+
+# (param name → image_field_style); first present name wins
+_IMAGE_STYLES = [
+    ("first_frame_url", "first_frame_url"),
+    ("image_urls", "image_urls"),
+    ("image_url", "single_url"),
+    ("input_urls", "input_urls"),
+    ("image", "image"),
+    ("reference_image_urls", "list:reference_image_urls"),
+    ("image_references", "list:image_references"),
+    ("image_input", "list:image_input"),
+    ("reference_image", "single:reference_image"),
+    ("first_frame_image_url", "single:first_frame_image_url"),
+    ("first_frame", "single:first_frame"),
+]
+_LAST_FRAME_FIELDS = ["last_frame_url", "end_image_url", "tail_image_url", "last_frame_image_url"]
+_AUDIO_FIELDS = ["generate_audio", "sound", "audio", "generate_audio_switch"]
+_RESOLUTION_FIELDS = ["resolution", "quality"]
+_ASPECT_FIELDS = ["aspect_ratio", "ratio"]
+
+
+def _catalog_alias(mid: str) -> str:
+    """'kling-3.0-omni/text-to-video' → 'kling-3.0-omni-t2v'."""
+    alias = mid.replace("/", "-")
+    for long, short in _MODE_ABBR.items():
+        alias = alias.replace(long, short)
+    return alias
+
+
+def _catalog_model(entry: dict) -> Model:
+    for p in entry["params"]:
+        p["name"] = p["name"].strip()   # docs carry stray trailing spaces ('image_urls ')
+    names = {p["name"] for p in entry["params"]}
+
+    def pick(cands: list[str]) -> str | None:
+        return next((c for c in cands if c in names), None)
+
+    mid = entry["id"]
+    modes = [short for long, short in _MODE_ABBR.items() if long in mid] or [mid.rsplit("/", 1)[-1]]
+    return Model(
+        id=mid,
+        aliases=[],
+        kind=entry["kind"],
+        modes=modes,
+        params=[Param(name=p["name"], type=p["type"], required=p["required"],
+                      default=p.get("default"), enum=p.get("enum"), desc=p.get("desc", ""))
+                for p in entry["params"]],
+        flag_map=FlagMap(
+            prompt="prompt" if "prompt" in names else None,
+            last_frame=pick(_LAST_FRAME_FIELDS),
+            duration="duration" if "duration" in names else None,
+            resolution=pick(_RESOLUTION_FIELDS),
+            aspect_ratio=pick(_ASPECT_FIELDS),
+            audio=pick(_AUDIO_FIELDS),
+            seed="seed" if "seed" in names else None,
+        ),
+        image_field_style=next((style for name, style in _IMAGE_STYLES if name in names), "none"),
+        doc=entry.get("doc", ""),
+        source="catalog",
+    )
+
+
+def _load_catalog() -> None:
+    try:
+        entries = json.loads(_CATALOG.read_text())
+    except (OSError, ValueError) as exc:
+        print(f"warning: model catalog unreadable ({exc}); builtin models only", file=sys.stderr)
+        return
+    taken = set(MODELS) | {a for m in MODELS.values() for a in m.aliases}
+    for entry in entries:
+        mid = entry.get("id")
+        if not mid or mid in taken:
+            continue
+        model = _catalog_model(entry)
+        alias = _catalog_alias(mid)
+        if alias != mid and alias not in taken:
+            model.aliases = [alias]
+            taken.add(alias)
+        MODELS[mid] = model
+        taken.add(mid)
+
+
+_load_catalog()
 
 
 # ── Alias index ──────────────────────────────────────────────────────────────

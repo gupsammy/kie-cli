@@ -206,9 +206,34 @@ def _cost_gate(
     """Apply cost confirmation gate (§5). Raises KieError or exits."""
     credits = estimate["credits"]
 
-    # credits=None means pricing unknown; skip gate entirely (server will validate)
+    # credits=None: pricing unknown or ambiguous. Never silently submit — a hard cap
+    # cannot be enforced, and an unknown price must be confirmed like an expensive one.
     if credits is None:
-        return
+        why = estimate.get("note") or estimate.get("formula") or "no pricing record matched"
+        if max_credits is not None:
+            raise KieError(
+                "estimate_unavailable",
+                f"No cost estimate for {model_id} ({why}); --max-credits cannot be enforced",
+                hint=f"kie cost {model_id} ... to see candidate rows; narrow with "
+                     "--resolution/--duration/--param, or drop --max-credits and pass --yes",
+                exit_code=7,
+            )
+        if yes:
+            return
+        if sys.stdin.isatty() and sys.stdout.isatty():
+            try:
+                ans = input(f"Cost estimate unavailable ({why}). Proceed? [y/N] ")
+            except (EOFError, KeyboardInterrupt):
+                raise KieError("confirmation_required", "Confirmation declined", exit_code=7)
+            if ans.strip().lower() != "y":
+                raise KieError("confirmation_required", "Confirmation declined", exit_code=7)
+            return
+        raise KieError(
+            "confirmation_required",
+            f"Cost estimate unavailable for {model_id} ({why}); re-run with --yes",
+            hint=f"kie generate {model_id} ... --yes",
+            exit_code=7,
+        )
 
     # Hard cap — not bypassed by --yes
     if max_credits is not None and credits > max_credits:
@@ -310,7 +335,8 @@ def cmd_models(args: Any, client: Client) -> int:
     if args.kind:
         all_models = [m for m in all_models if m.kind == args.kind]
     rows_out = [
-        {"id": m.id, "aliases": m.aliases, "kind": m.kind, "modes": getattr(m, "modes", [])}
+        {"id": m.id, "aliases": m.aliases, "kind": m.kind, "modes": getattr(m, "modes", []),
+         "source": getattr(m, "source", "builtin")}
         for m in all_models
     ]
     if args.json:
@@ -342,10 +368,14 @@ def cmd_schema(args: Any, client: Client) -> int:
     model = registry.resolve(args.model)
     params_raw = getattr(model, "params", [])
     params = [_param_to_dict(p) for p in params_raw]
+    doc = getattr(model, "doc", "")
     if args.json:
-        _json_out({"model": model.id, "params": params})
+        out = {"model": model.id, "params": params}
+        if doc:
+            out["doc"] = doc
+        _json_out(out)
     else:
-        print(f"Schema for {model.id}:")
+        print(f"Schema for {model.id}:" + (f"  ({doc})" if doc else ""))
         for p in params:
             req = "required" if p.get("required") else "optional"
             default = f"  default={p['default']}" if "default" in p else ""
@@ -416,6 +446,10 @@ def cmd_cost(args: Any, client: Client) -> int:
         "balance": balance,
         "sufficient": sufficient,
     }
+    if est.get("note"):
+        result["note"] = est["note"]
+    if est.get("candidates"):
+        result["candidates"] = est["candidates"]
 
     if args.json:
         _json_out(result)
@@ -423,15 +457,25 @@ def cmd_cost(args: Any, client: Client) -> int:
         # credits/usd are None when no pricing record matched — render gracefully
         # instead of crashing on the float format spec.
         if credits is None:
-            estimate_line = "Estimate: unknown (no pricing record matched)"
+            src = est.get("source")
+            estimate_line = ("Estimate: unknown (several pricing rows match — see candidates)"
+                             if src == "ambiguous" else
+                             "Estimate: unknown (duration/size needed to price)"
+                             if src == "estimate" else
+                             "Estimate: unknown (no pricing record matched)")
         else:
             estimate_line = f"Estimate: {credits} credits (${est['usd']:.4f} USD)"
         note = est.get("note")
+        cands = "".join(
+            f"  - {c['description']}: {c['credits']} {c['unit'] or ''}\n"
+            for c in est.get("candidates", [])
+        )
         _human(
             f"Model: {model_id}\n"
             f"{estimate_line}\n"
             f"Formula: {est.get('formula', 'n/a')}\n"
             + (f"Note: {note}\n" if note else "")
+            + (f"Candidates:\n{cands}" if cands else "")
             + f"Balance: {balance} credits  sufficient={sufficient}",
             quiet=args.quiet,
         )
@@ -848,7 +892,7 @@ def _add_generation_flags(parser: Any) -> None:
     parser.add_argument("--input-json", metavar="JSON|-",
                         help="Full input object verbatim; '-' reads stdin")
     parser.add_argument("--dummy-ref", dest="dummy_ref", action="store_true", default=True,
-                        help="Attach the cost-saving blank 2s video ref on seedance-2 / -fast / -mini when no "
+                        help="Attach the cost-saving blank 2s video ref on seedance-2 / -fast / -mini / -2.5 when no "
                              "video ref is present (cheaper with-video SKU). ON by default; auto-skipped "
                              "when a real video ref is present.")
     parser.add_argument("--no-dummy-ref", dest="dummy_ref", action="store_false",
